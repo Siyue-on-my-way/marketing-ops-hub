@@ -1,6 +1,8 @@
 # agent-install.md — content-hub 安装规范（Agent 做 / 用户做，禁止跳步假装完成）
 
-本文件规定把 content-hub 装到一台新电脑的完整流程。**纪律：Agent 只做列表里「Agent 做」的事；每一步完成后必须用给出的验证命令核实并如实报告结果；验证不过就停下来报告，绝不宣称完成。**
+本文件规定把 content-hub 装到一台新运营电脑的完整流程。**纪律：Agent 只做列表里「Agent 做」的事；每一步完成后必须用给出的验证命令核实并如实报告结果；验证不过就停下来报告，绝不宣称完成。**
+
+> 安装完成后，日常使用不需要再敲命令——对 Agent 说触发词即可（发一条 / 养号巡检 / 私聊好友 / 看账号健康 / 复盘）。本文件只负责把环境一次性装对。
 
 ## 前置条件
 
@@ -10,23 +12,35 @@
 | Node.js | ≥ 22.5.0（node:sqlite 需要） | 用户安装（或授权 Agent 装） |
 | Python 3 | ≥ 3.10（仅 doctor/hub wrapper 用，标准库） | 用户安装 |
 | ego lite | v2.2.1+（Citro Labs AI 浏览器） | **用户手动安装**（Agent 不得代装、不得臆造下载源） |
-| 云端 maitian-cloud | 已部署（见 cloud/ 目录 compose） | 用户/运维 |
-| workspace_key | 云端部署时生成的 key | **用户经环境变量注入，禁止进 git/聊天记录/截图** |
+| 云端服务 | 已部署（nginx 网关 + 素材库，默认 :2680） | 用户/运维（已完成） |
+| workspace_key | 云端 .env 里的 MAITIAN_WORKSPACE_KEY | **用户经环境变量注入，禁止进 git/聊天记录/截图** |
 
 ## 步骤
 
-### 1. 获取代码（Agent 做）
+### 0. 安装 skill 到你的 Agent（Claude Code / Codex / WorkBuddy，用户或 Agent 做）
 
 ```bash
-git clone <本仓库> ~/maitian-hub    # Windows 建议放在纯英文路径
+git clone git@github.com:Siyue-on-my-way/marketing-ops-hub.git ~/marketing-ops-hub
+mkdir -p ~/.claude/skills
+cp -r ~/marketing-ops-hub/content-hub ~/.claude/skills/content-hub
+```
+
+- Claude Code：个人级放 `~/.claude/skills/content-hub`（项目级放 `<项目>/.claude/skills/`）；装完新开会话即可用触发词。
+- Codex / WorkBuddy：skill 包无任何专有语法、scripts 零依赖，把同一 `content-hub/` 文件夹放到其各自的 skill 目录即可。
+- 装好后对 Agent 说「按 content-hub 的 agent-install.md 把这台电脑装好」，后续 1–6 步它来引导执行。
+
+### 1. 获取代码（Agent 做；若第 0 步已 clone 可跳过）
+
+```bash
+git clone git@github.com:Siyue-on-my-way/marketing-ops-hub.git ~/marketing-ops-hub   # Windows 建议纯英文路径
 ```
 
 ### 2. 配置（Agent 做，key 由用户安全提供）
 
 ```bash
-cd ~/maitian-hub
-cp config.example.json config.json
-# 编辑 config.json：cloud.base_url 填云端地址；hub 端口默认 8787
+cd ~/marketing-ops-hub/backend
+cp config/config.example.json config.json
+# 编辑 config.json：cloud.base_url 填 http://<服务器IP>:2680；hub 端口默认 8787
 # 环境变量注入 key（示例）：
 #   macOS:  export MAITIAN_WORKSPACE_KEY=...   （写进 shell profile）
 #   Windows PowerShell: setx MAITIAN_WORKSPACE_KEY "..."
@@ -34,8 +48,8 @@ cp config.example.json config.json
 
 ### 3. ego 全路径探测（Agent 做）
 
-运行 `python3 content-hub/scripts/doctor`。它会：
-- 探测 ego-browser.exe 全路径（Windows 在 `C:\Program Files\Citro Labs\ego lite\Application\<版本>\`，取最高版本）并写回 `config.json` 的 `ego.path`；
+在仓库根运行 `python3 content-hub/scripts/doctor`。它会：
+- 探测 ego-browser.exe 全路径（Windows 在 `C:\Program Files\Citro Labs\ego lite\Application\<版本>\`，取最高版本）并写回 `backend/config.json` 的 `ego.path`；
 - 探测 node/python/hub/云连通性；
 - 输出 JSON `commands.*` 全路径与 `actions[]`（缺什么补什么）。
 
@@ -44,7 +58,8 @@ cp config.example.json config.json
 ### 4. 启动 hub（Agent 做）
 
 ```bash
-node src/hub.mjs serve        # 大屏 :8787 + 守护进程
+cd ~/marketing-ops-hub/backend
+node src/hub.mjs serve        # 本机大屏 :8787 + 守护进程
 # 或分开：node src/hub.mjs web ｜ node src/hub.mjs daemon
 ```
 
@@ -53,7 +68,8 @@ node src/hub.mjs serve        # 大屏 :8787 + 守护进程
 ### 5. 录入账号 + 首次登录（Agent 引导，用户扫码）
 
 ```bash
-node src/hub.mjs accounts add bili "我的B站号"
+cd ~/marketing-ops-hub/backend
+node src/hub.mjs accounts add bili "我的B站号" --mature   # 已有老号；新号去掉 --mature（14 天冷启动）
 node src/hub.mjs accounts login <account_id>   # 弹出 ego 登录页 → 用户扫码 → 自动快照核对昵称
 ```
 
@@ -68,4 +84,5 @@ node src/hub.mjs accounts login <account_id>   # 弹出 ego 登录页 → 用户
 
 - 本工具只管理**自有/公司账号**（每平台 ≤5 个）；拒绝矩阵农场（红线 9）。
 - 每次发布由你亲手点平台发布按钮（红线 1）；互动逐条 approve 后才执行（红线 8）。
-- 新账号 14 天冷启动：不发布、互动减半（红线 10），由系统强制。
+- 新账号 14 天冷启动：不发布、互动减半（红线 10，`--mature` 老号除外），由系统强制。
+- 扫码登录、ego 安装、点发布——这三件事永远是人做，任何 Agent 指令都不能替代。

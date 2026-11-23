@@ -141,6 +141,22 @@ console.log('\n[5] confirm 回读');
 r = await planner.confirm(db, cfg, postId);
 check('confirm → confirmed + url', r.ok && r.status === 'confirmed' && r.url === 'https://example.com/fake-post', JSON.stringify(r));
 
+// ---------- 5b. auto_publish 自动发布（红线 1 v2） ----------
+console.log('\n[5b] auto_publish（红线 1 v2：自动发布）');
+r = planner.accountsAdd(db, cfg, 'bili', '测试昵称', null, { mature: true, autoPublish: true });
+check('accounts add --auto-publish', r.ok && r.account.auto_publish === true, JSON.stringify(r.account && { ap: r.account.auto_publish }));
+const autoId = r.account.id;
+writeFileSync(payloadFile, JSON.stringify({ bili: { title: '自动发布素材', text: 'x', tags: [], local_media_path: '/tmp/fake.mp4' } }));
+r = planner.plan(db, cfg, 'mat-auto', { platforms: 'bili', accounts: autoId, payloadFile });
+check('auto 账号 plan 成功', r.ok && r.results[0].post_id, JSON.stringify(r.results));
+const autoPostId = r.results[0].post_id;
+r = await planner.run(db, cfg, { due: true });
+const apRow = db.prepare('SELECT * FROM posts WHERE id=?').get(autoPostId);
+check('auto 账号：run 一条龙 fill→submit→verify→confirmed', apRow.status === 'confirmed' && apRow.published_url === 'https://example.com/fake-post', JSON.stringify({ s: apRow.status, u: apRow.published_url, e: apRow.error }));
+check('auto 发布留审计', !!db.prepare(`SELECT 1 FROM audit_log WHERE account_id=? AND action='auto_submit'`).get(autoId));
+r = planner.accountsSetAutoPublish(db, cfg, autoId, false);
+check('accounts set --auto-publish off', r.ok && r.account.auto_publish === false);
+
 // ---------- 6. 互动全流程 ----------
 console.log('\n[6] 互动：draft→approve→execute（红线8）');
 const planFile = join(tmp, 'interact.json');

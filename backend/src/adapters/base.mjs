@@ -166,6 +166,15 @@ export function makeAdapter(spec) {
       return { done: false, error: 'unknown kind: ' + kind };
     },
 
+    /**
+     * 红线 1 v2：自动发布（AUTO_PUBLISH）。唯一实现委托给 adapters/submit.mjs（全仓库唯一
+     * 点击发布按钮的代码路径）；仅当账号显式开启 auto_publish 时 hub 才会调度本操作。
+     */
+    async submit(page, payload, k, ctx) {
+      const { autoSubmit } = await import('./submit.mjs');
+      return autoSubmit(page, payload, k, ctx);
+    },
+
     ...spec,
   };
   return adapter;

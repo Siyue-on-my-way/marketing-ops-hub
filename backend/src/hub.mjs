@@ -17,7 +17,7 @@ function usage() {
   print({
     ok: false,
     usage: [
-      'node src/hub.mjs accounts list | add <platform> <name> [--mature（已有老号，跳过14天冷启动）] | login <account_id> | remove <id>',
+      'node src/hub.mjs accounts list | add <platform> <name> [--mature（已有老号，跳过14天冷启动）] [--auto-publish（自动发布，红线1 v2）] | set <id> --auto-publish on|off | login <account_id> | remove <id>',
       'node src/hub.mjs plan <material_id> --platforms xhs,douyin --accounts <id,id> [--at "2026-11-24 10:00"] --payload-file <payload.json>',
       'node src/hub.mjs run [--due]',
       'node src/hub.mjs confirm <post_id>',
@@ -44,7 +44,14 @@ async function main() {
       if (sub === 'add') {
         const [platform, name] = rest;
         if (!platform || !name) return usage();
-        return print(planner.accountsAdd(db, cfg, platform, name, argFlag('device'), { mature: hasFlag('mature') }));
+        return print(planner.accountsAdd(db, cfg, platform, name, argFlag('device'), { mature: hasFlag('mature'), autoPublish: hasFlag('auto-publish') }));
+      }
+      if (sub === 'set') {
+        const [id] = rest;
+        if (!id) return usage();
+        const ap = argFlag('auto-publish');
+        if (ap === undefined || !['on', 'off'].includes(ap)) return print({ ok: false, error: '需要 --auto-publish on|off' });
+        return print(planner.accountsSetAutoPublish(db, cfg, id, ap === 'on'));
       }
       if (sub === 'login') {
         const [id] = rest;

@@ -72,6 +72,9 @@ export function openDb(dbPath) {
   db.exec('PRAGMA journal_mode = WAL;');
   db.exec('PRAGMA foreign_keys = ON;');
   db.exec(DDL);
+  // 轻量迁移：已有库补列（红线1 v2：auto_publish 自动发布开关）
+  const acctCols = db.prepare('PRAGMA table_info(accounts)').all().map((c) => c.name);
+  if (!acctCols.includes('auto_publish')) db.exec('ALTER TABLE accounts ADD COLUMN auto_publish INTEGER DEFAULT 0');
   return db;
 }
 

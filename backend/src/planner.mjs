@@ -106,6 +106,7 @@ export function accountsList(db, cfg) {
     out.push({
       id: a.id, platform: a.platform, display_name: a.display_name, ego_space_id: a.ego_space_id,
       owner_device: a.owner_device, status: a.status, trust_score: a.trust_score, risk_events: a.risk_events,
+      auto_publish: !!a.auto_publish,
       quota: q, used: { post: usedToday(db, a.id, 'post'), like: usedToday(db, a.id, 'like'), comment: usedToday(db, a.id, 'comment'), dm: usedToday(db, a.id, 'dm') },
       cold_days_left: coldDays,
       login: login ? { ok: login.ok, displayName: login.displayName, checked_at: login.checked_at } : { ok: null, note: '未预检' },
@@ -114,7 +115,7 @@ export function accountsList(db, cfg) {
   return out;
 }
 
-export function accountsAdd(db, cfg, platform, name, ownerDevice, { mature = false } = {}) {
+export function accountsAdd(db, cfg, platform, name, ownerDevice, { mature = false, autoPublish = false } = {}) {
   if (!PLATFORMS.includes(platform)) return { ok: false, error: '未知平台: ' + platform + '（可选: ' + PLATFORMS.join(',') + '）' };
   const id = newId('a');
   const egoSpaceId = `mt-${platform}-${id}`;
@@ -123,12 +124,22 @@ export function accountsAdd(db, cfg, platform, name, ownerDevice, { mature = fal
   const status = mature ? 'active' : 'cold';
   const trust = mature ? 0.8 : 0.5;
   db.prepare(
-    `INSERT INTO accounts(id, platform, display_name, ego_space_id, owner_device, status, daily_quota, trust_score, risk_events, created_at, updated_at)
-     VALUES(?,?,?,?,?, ?, ?, ?, 0, ?, ?)`
-  ).run(id, platform, name, egoSpaceId, ownerDevice || null, status, JSON.stringify(cfg.quota_default), trust, nowIso(), nowIso());
-  audit(db, id, 'account_add', mature
-    ? { platform, name, mature: '已有老号录入：跳过冷启动（用户明示），身份复核/配额/风控照常强制' }
-    : { platform, name, cold_start: '红线10：14 天冷启动，不发布' });
+    `INSERT INTO accounts(id, platform, display_name, ego_space_id, owner_device, status, daily_quota, trust_score, risk_events, created_at, updated_at, auto_publish)
+     VALUES(?,?,?,?,?, ?, ?, ?, 0, ?, ?, ?)`
+  ).run(id, platform, name, egoSpaceId, ownerDevice || null, status, JSON.stringify(cfg.quota_default), trust, nowIso(), nowIso(), autoPublish ? 1 : 0);
+  const notes = [];
+  notes.push(mature ? '已有老号录入：跳过冷启动（用户明示），身份复核/配额/风控照常强制' : '红线10：14 天冷启动，不发布');
+  if (autoPublish) notes.push('红线1 v2：auto 模式——填写后系统自动点发布并回读（内容仍须事前人审）');
+  audit(db, id, 'account_add', { platform, name, notes });
+  return { ok: true, account: accountsList(db, cfg).find((x) => x.id === id) };
+}
+
+/** 红线 1 v2：按账号开关 auto 发布模式（on/off） */
+export function accountsSetAutoPublish(db, cfg, id, on) {
+  const account = getAccount(db, id);
+  if (!account) return { ok: false, error: '账号不存在: ' + id };
+  db.prepare('UPDATE accounts SET auto_publish=?, updated_at=? WHERE id=?').run(on ? 1 : 0, nowIso(), id);
+  audit(db, id, 'auto_publish_' + (on ? 'on' : 'off'), '红线1 v2：自动发布模式' + (on ? '开启（内容仍须事前人审）' : '关闭（恢复亲手点发布）'));
   return { ok: true, account: accountsList(db, cfg).find((x) => x.id === id) };
 }
 
@@ -238,7 +249,7 @@ export function plan(db, cfg, materialId, { platforms, accounts, at, payloadFile
 
 export async function run(db, cfg, { due = false } = {}) {
   let sql = `SELECT p.id AS post_id, p.material_cloud_id, p.account_id, p.platform, p.adapted_payload, p.scheduled_at,
-    a.platform AS acct_platform, a.display_name, a.ego_space_id, a.status AS acct_status, a.trust_score, a.risk_events, a.daily_quota, a.created_at AS acct_created
+    a.platform AS acct_platform, a.display_name, a.ego_space_id, a.status AS acct_status, a.trust_score, a.risk_events, a.daily_quota, a.created_at AS acct_created, a.auto_publish AS acct_auto_publish
     FROM posts p JOIN accounts a ON a.id=p.account_id WHERE p.status='planned'`;
   const args = [];
   if (due) { sql += ' AND p.scheduled_at<=?'; args.push(nowIso()); }
@@ -252,6 +263,7 @@ export async function run(db, cfg, { due = false } = {}) {
       id: row.account_id, platform: row.acct_platform, display_name: row.display_name,
       ego_space_id: row.ego_space_id, status: row.acct_status, trust_score: row.trust_score,
       risk_events: row.risk_events, daily_quota: row.daily_quota, created_at: row.acct_created,
+      auto_publish: !!row.acct_auto_publish,
     };
     // 红线 7：活跃时段 9–21 点
     if (!inActiveHours(cfg)) {
@@ -318,7 +330,28 @@ export async function run(db, cfg, { due = false } = {}) {
       db.prepare(`UPDATE posts SET status='filled', filled_at=?, shot_filled=?, error=? WHERE id=?`)
         .run(nowIso(), r.shot || null, warn.length ? 'warn: ' + JSON.stringify(warn).slice(0, 450) : null, postId);
       audit(db, acct.id, 'fill', { post_id: postId, platform: row.platform, warn }, { shot: r.shot });
-      out.push({ post_id: postId, status: 'filled（待人审：请去平台亲手点发布，再 hub confirm）', warn });
+      // 红线 1 v2 双轨：账号开启 auto_publish → 系统自动点发布并回读（内容仍须事前人审）；
+      // 否则 filled 待用户亲手点发布。submit 代码路径唯一存在于 adapters/submit.mjs。
+      if (acct.auto_publish) {
+        const sr = await runOp(db, cfg, acct, 'submit', { payload, postId });
+        if (sr.ok) {
+          db.prepare(`UPDATE posts SET status='published', published_at=? WHERE id=?`).run(nowIso(), postId);
+          audit(db, acct.id, 'auto_submit', { post_id: postId }, { shot: sr.shot });
+          const cr = await confirm(db, cfg, postId);
+          if (cr.ok) out.push({ post_id: postId, status: 'auto_published+confirmed（自动发布完成，回读通过）', url: cr.url, warn });
+          else out.push({ post_id: postId, status: 'auto_published（已点发布；回读未过，稍后重跑 hub confirm）', warn: [...warn, String(cr.error || '')] });
+        } else if (sr.error === 'RISK_SIGNAL') {
+          riskHit(db, acct, sr);
+          markSkipped(db, postId, 'skipped(risk)', 'auto_submit 风控信号: ' + JSON.stringify((sr.data && sr.data.risk) || []));
+          out.push({ post_id: postId, skipped: 'risk(auto_submit)' });
+        } else {
+          db.prepare(`UPDATE posts SET status='failed', error=? WHERE id=?`).run(('auto_submit: ' + sr.error).slice(0, 500), postId);
+          audit(db, acct.id, 'auto_submit_failed', { post_id: postId, error: sr.error }, { shot: sr.shot });
+          out.push({ post_id: postId, failed: 'auto_submit: ' + sr.error });
+        }
+      } else {
+        out.push({ post_id: postId, status: 'filled（待人审：请去平台亲手点发布，再 hub confirm）', warn });
+      }
     } else if (r.error === 'RISK_SIGNAL') {
       riskHit(db, acct, r);
       markSkipped(db, postId, 'skipped(risk)', '风控信号: ' + JSON.stringify((r.data && r.data.risk) || []));
@@ -341,7 +374,7 @@ export async function confirm(db, cfg, postId) {
   const p = db.prepare('SELECT * FROM posts WHERE id=?').get(postId);
   if (!p) return { ok: false, error: 'post not found: ' + postId };
   if (!['filled', 'published'].includes(p.status)) {
-    return { ok: false, error: `状态为 ${p.status}，仅 filled（已填写待人点发布）/published 可 confirm——发布按钮必须由用户亲手点（红线 1）` };
+    return { ok: false, error: `状态为 ${p.status}，仅 filled（review 模式待人点发布）/published 可 confirm——review 模式发布按钮必须由用户亲手点（红线 1；auto 模式由系统执行并自动 confirm）` };
   }
   const acct = getAccount(db, p.account_id);
   let payload = {};

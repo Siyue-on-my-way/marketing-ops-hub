@@ -69,12 +69,15 @@ node src/hub.mjs serve        # 本机大屏 :8787 + 守护进程
 
 ```bash
 cd ~/marketing-ops-hub/backend
-node src/hub.mjs accounts add bili "我的B站号" --mature   # 已有老号；新号去掉 --mature（14 天冷启动）
+node src/hub.mjs accounts add bili "我的B站号" --mature --auto-publish   # 老号+自动发布
+node src/hub.mjs accounts add xhs "我的小红书号"                          # 新号：14 天冷启动，review 模式
+node src/hub.mjs accounts set <account_id> --auto-publish off            # 随时切换发布模式
 node src/hub.mjs accounts login <account_id>   # 弹出 ego 登录页 → 用户扫码 → 自动快照核对昵称
 ```
 
 - 扫码永远用户亲手做（红线 3）；Agent 不得索要/代填任何平台凭据。
 - 登录后 Agent 必须核对返回的 `displayName` 与账号昵称一致（红线 4）。
+- `--auto-publish`（红线 1 v2）：填写后系统自动点发布并回读，用户不必守在电脑旁；内容人审前移不变（文案必须先过目）。默认 review 模式。
 
 ### 6. 终验（Agent 做）
 
@@ -83,6 +86,6 @@ node src/hub.mjs accounts login <account_id>   # 弹出 ego 登录页 → 用户
 ## 用户须知（Agent 转达）
 
 - 本工具只管理**自有/公司账号**（每平台 ≤5 个）；拒绝矩阵农场（红线 9）。
-- 每次发布由你亲手点平台发布按钮（红线 1）；互动逐条 approve 后才执行（红线 8）。
-- 新账号 14 天冷启动：不发布、互动减半（红线 10，`--mature` 老号除外），由系统强制。
-- 扫码登录、ego 安装、点发布——这三件事永远是人做，任何 Agent 指令都不能替代。
+- 发布双轨（红线 1 v2）：review 账号由你亲手点发布；`--auto-publish` 账号系统自动发布并回读——两种模式的内容都必须先经你过目。
+- 互动逐条 approve 后才执行（红线 8）；新账号 14 天冷启动：不发布、互动减半（红线 10，`--mature` 老号除外），由系统强制。
+- 扫码登录、ego 安装——这两件事永远是人做，任何 Agent 指令都不能替代。

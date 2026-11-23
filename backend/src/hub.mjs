@@ -17,7 +17,7 @@ function usage() {
   print({
     ok: false,
     usage: [
-      'node src/hub.mjs accounts list | add <platform> <name> | login <account_id> | remove <id>',
+      'node src/hub.mjs accounts list | add <platform> <name> [--mature（已有老号，跳过14天冷启动）] | login <account_id> | remove <id>',
       'node src/hub.mjs plan <material_id> --platforms xhs,douyin --accounts <id,id> [--at "2026-11-24 10:00"] --payload-file <payload.json>',
       'node src/hub.mjs run [--due]',
       'node src/hub.mjs confirm <post_id>',
@@ -44,7 +44,7 @@ async function main() {
       if (sub === 'add') {
         const [platform, name] = rest;
         if (!platform || !name) return usage();
-        return print(planner.accountsAdd(db, cfg, platform, name, argFlag('device')));
+        return print(planner.accountsAdd(db, cfg, platform, name, argFlag('device'), { mature: hasFlag('mature') }));
       }
       if (sub === 'login') {
         const [id] = rest;

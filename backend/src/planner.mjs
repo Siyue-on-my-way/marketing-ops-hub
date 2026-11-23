@@ -114,15 +114,21 @@ export function accountsList(db, cfg) {
   return out;
 }
 
-export function accountsAdd(db, cfg, platform, name, ownerDevice) {
+export function accountsAdd(db, cfg, platform, name, ownerDevice, { mature = false } = {}) {
   if (!PLATFORMS.includes(platform)) return { ok: false, error: '未知平台: ' + platform + '（可选: ' + PLATFORMS.join(',') + '）' };
   const id = newId('a');
   const egoSpaceId = `mt-${platform}-${id}`;
+  // 红线 10 针对「新账号」：--mature 录入已有老号时跳过冷启动（须用户明示这是老号，
+  // 且身份复核/配额/风控等其余红线全部照常强制）
+  const status = mature ? 'active' : 'cold';
+  const trust = mature ? 0.8 : 0.5;
   db.prepare(
     `INSERT INTO accounts(id, platform, display_name, ego_space_id, owner_device, status, daily_quota, trust_score, risk_events, created_at, updated_at)
-     VALUES(?,?,?,?,?, 'cold', ?, 0.5, 0, ?, ?)`
-  ).run(id, platform, name, egoSpaceId, ownerDevice || null, JSON.stringify(cfg.quota_default), nowIso(), nowIso());
-  audit(db, id, 'account_add', { platform, name, cold_start: '红线10：14 天冷启动，不发布' });
+     VALUES(?,?,?,?,?, ?, ?, ?, 0, ?, ?)`
+  ).run(id, platform, name, egoSpaceId, ownerDevice || null, status, JSON.stringify(cfg.quota_default), trust, nowIso(), nowIso());
+  audit(db, id, 'account_add', mature
+    ? { platform, name, mature: '已有老号录入：跳过冷启动（用户明示），身份复核/配额/风控照常强制' }
+    : { platform, name, cold_start: '红线10：14 天冷启动，不发布' });
   return { ok: true, account: accountsList(db, cfg).find((x) => x.id === id) };
 }
 

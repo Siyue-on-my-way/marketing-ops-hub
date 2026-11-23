@@ -95,6 +95,10 @@ r = planner.plan(db, cfg, 'mat-1', { platforms: 'bili', accounts: biliId, payloa
 check('红线6：同素材同账号同平台防重', r.results[0].skipped && r.results[0].skipped.includes('duplicate'));
 r = planner.accountsRemove(db, biliId);
 check('有任务的账号拒绝删除（审计不可断）', !r.ok && r.error.includes('拒绝删除'), JSON.stringify(r));
+r = planner.accountsAdd(db, cfg, 'bili', '老号昵称', null, { mature: true });
+check('--mature 老号录入：active + trust0.8（红线10仅针对新号）', r.ok && r.account.status === 'active' && r.account.trust_score === 0.8, JSON.stringify(r.account && { s: r.account.status, t: r.account.trust_score }));
+const matureQuota = planner.quotaOf({ status: 'active', daily_quota: JSON.stringify({ post: 2, like: 30, comment: 5, dm: 10 }), trust_score: 0.8 }, cfg);
+check('--mature 老号可立即发布（post 配额 ≥1）', matureQuota.post >= 1, JSON.stringify(matureQuota));
 r = planner.plan(db, cfg, 'mat-2', { platforms: 'bili', accounts: biliId, payloadFile });
 const firstSched = db.prepare('SELECT scheduled_at FROM posts WHERE id=?').get(postId).scheduled_at;
 check('红线7：第二篇自动顺延 post_gap', r.ok && r.results[0].scheduled_at > firstSched, JSON.stringify(r.results[0]));

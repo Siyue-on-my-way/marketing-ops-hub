@@ -1,0 +1,46 @@
+{
+  "platform": "tiktok",
+  "version": 1,
+  "_status": "初始版（待实测）：网页版 studio.tiktok.com；注意登录态区域匹配",
+  "notes": "文案（caption）≤2200 含话题；上传处理慢，等待放宽；英文界面用英文文本目标。",
+  "pages": {
+    "login": {
+      "url": "https://studio.tiktok.com/",
+      "check_text": "TikTok Studio",
+      "display_name_text": null,
+      "display_name_sel": null
+    },
+    "publish": {
+      "url": "https://studio.tiktok.com/upload",
+      "upload_text": "Select file",
+      "upload_sel": null,
+      "file_input_sel": "input[type='file']",
+      "form_ready_text": "Caption",
+      "caption_sel": null,
+      "caption_focus_text": "Caption",
+      "submit_sel": null,
+      "submit_text": "Post",
+      "steps": [
+        "点 Select file → waitForFileChooser → setFiles → 等处理",
+        "填 Caption(≤2200, 话题并入) → 滚动到 Post 按钮 → 停（人不点，红线1）"
+      ],
+      "verify_note": "Content 列表出现新视频"
+    },
+    "verify": {
+      "url": "https://studio.tiktok.com/content"
+    },
+    "metrics": {
+      "url": "https://studio.tiktok.com/analytics",
+      "fields": { "views": "Views", "likes": "Likes", "comments": "Comments", "shares": "Shares" }
+    }
+  },
+  "interact": {
+    "like": { "click_text": null, "click_sel": "[data-e2e='like-icon']" },
+    "comment": { "box_sel": null, "box_focus_text": "Add comment", "send_text": "Post", "send_sel": null },
+    "dm": { "box_sel": null, "box_focus_text": null, "send_text": "Send", "send_sel": null },
+    "follow": { "click_text": "Follow", "click_sel": null }
+  },
+  "risk": ["Captcha", "re:unusual activity|verify|blocked"],
+  "cadence": { "post_gap_sec": [150, 300], "daily_post": 2, "interact_gap_sec": [30, 120] },
+  "limits": { "caption_max": 2200 }
+}

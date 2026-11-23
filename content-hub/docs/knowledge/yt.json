@@ -1,0 +1,50 @@
+{
+  "platform": "yt",
+  "version": 1,
+  "_status": "初始版（待实测）：studio.youtube.com；页面重加载慢（waitFor 放宽 60s+）",
+  "notes": "英文界面；向导 Next 允许系统点击（非发布）；Publish 按钮绝不点击（红线1）。长文描述 ≤5000，标题 ≤100。",
+  "pages": {
+    "login": {
+      "url": "https://studio.youtube.com/",
+      "check_text": "Studio",
+      "display_name_text": null,
+      "display_name_sel": null
+    },
+    "publish": {
+      "url": "https://studio.youtube.com/channel/upload",
+      "upload_text": "Upload videos",
+      "upload_sel": null,
+      "file_input_sel": "input[type='file']",
+      "form_ready_text": "Title",
+      "title_sel": null,
+      "title_focus_text": "Title",
+      "desc_sel": null,
+      "desc_focus_text": "Description",
+      "next_texts": ["Next", "Next", "Next"],
+      "submit_sel": null,
+      "submit_text": "Publish",
+      "steps": [
+        "CREATE → Upload videos → waitForFileChooser → setFiles",
+        "等标题表单（最长10分钟）→ 填 Title → Description → Next×3（向导步进）",
+        "滚动到 Publish → 停（人不点，红线1）"
+      ],
+      "verify_note": "Content 列表出现新视频"
+    },
+    "verify": {
+      "url": "https://studio.youtube.com/channel/content"
+    },
+    "metrics": {
+      "url": "https://studio.youtube.com/channel/analytics",
+      "fields": { "views": "Views", "likes": "Likes", "comments": "Comments", "shares": "Shares" }
+    }
+  },
+  "interact": {
+    "like": { "click_text": null, "click_sel": "#like-button button, ytd-toggle-button-renderer button" },
+    "comment": { "box_sel": null, "box_focus_text": "Add a comment", "send_text": "Comment", "send_sel": null },
+    "dm": { "box_sel": null, "box_focus_text": null, "send_text": "Send", "send_sel": null },
+    "follow": { "click_text": "Subscribe", "click_sel": null }
+  },
+  "risk": ["re:unusual traffic|confirm you're not a robot"],
+  "cadence": { "post_gap_sec": [120, 300], "daily_post": 2, "interact_gap_sec": [30, 120] },
+  "limits": { "title_max": 100, "desc_max": 5000 }
+}

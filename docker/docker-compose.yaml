@@ -1,0 +1,79 @@
+# marketing-ops-hub · 多目录 + Docker Compose 统一网关
+#
+# 服务链路（架构铁律）：客户端 → nginx:{GATEWAY_PORT} ─┬─ /        → frontend（大屏静态）
+#                                                     ├─ /api/*   → backend（hub 中控，daemon+大屏API）
+#                                                     （无 WebSocket，/ws 段按模板说明删除）
+#
+# 对模板的说明：本项目业务上有两个服务端组件（规格 §3.2 拓扑）——
+#   backend  = hub 本地中控（排期/审核/大屏 API/审计）
+#   maitian-cloud = 云素材库（生产建议独立服务器部署，见 docker-compose.cloud.yaml；
+#                   单机演示并入本栈作内部服务，不映射宿主端口，hub 经内部网访问）
+# 知识包单一来源 content-hub/docs/knowledge，经 additional_contexts 共享进镜像（防漂移）。
+services:
+  nginx:                        # 唯一网关，唯一对外端口
+    image: nginx:alpine
+    ports:
+      - "${GATEWAY_PORT:-2380}:80"
+    volumes:
+      - ./volumes/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+    networks: [app-net]
+
+  backend:                      # hub 本地中控（Node 22，零依赖；EXPOSE 8787）
+    build:
+      context: ../backend
+      additional_contexts:
+        knowledge: ../content-hub
+    environment:
+      - SERVER_TOKEN=${SERVER_TOKEN}                        # 网关鉴权令牌（必填，.env）
+      - MAITIAN_WORKSPACE_KEY=${MAITIAN_WORKSPACE_KEY}      # 云素材库 key（必填，.env，不入库）
+      - MAITIAN_CLOUD_URL=http://maitian-cloud:8788         # 生产拆分时改为云端地址
+      - MAITIAN_HUB_HOST=0.0.0.0                            # 容器内放开绑定（网关需访问）
+      - MAITIAN_DATA_DIR=/app/data
+      - MAITIAN_VAR_DIR=/app/var
+      - MAITIAN_KNOWLEDGE_DIR=/app/knowledge
+    volumes:
+      - ./volumes/marketing-ops-hub/config.json:/app/config.json:ro
+      - ./volumes/marketing-ops-hub/data:/app/data
+      - ./volumes/marketing-ops-hub/workspace:/app/var
+    cap_drop: [ALL]
+    restart: unless-stopped
+    networks: [app-net]
+
+  frontend:                     # 大屏静态页（只挂内部网络，不映射宿主机端口）
+    build:
+      context: ../frontend
+      additional_contexts:
+        backend-shared: ../backend
+      args:
+        NPM_REGISTRY: "${NPM_REGISTRY:-https://registry.npmmirror.com}"
+    restart: unless-stopped
+    networks: [app-net]
+
+  maitian-cloud:                # 云素材库（内部服务；生产拆分见 docker-compose.cloud.yaml）
+    build:
+      context: ../backend
+      additional_contexts:
+        knowledge: ../content-hub
+    command: ["node", "cloud/server.mjs"]
+    environment:
+      - PORT=8788
+      - MAITIAN_WORKSPACE_KEY=${MAITIAN_WORKSPACE_KEY}
+      - MAITIAN_DATA_DIR=/data
+    volumes:
+      - ./volumes/marketing-ops-hub/cloud-data:/data
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8788/v1/ping').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    cap_drop: [ALL]
+    restart: unless-stopped
+    networks: [app-net]
+
+networks:
+  app-net:
+    driver: bridge

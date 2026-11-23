@@ -1,0 +1,159 @@
+#!/usr/bin/env python3
+"""content-hub/scripts/doctor — 环境自检（零第三方依赖，标准库 only）。
+
+输出 JSON（agent 消费）：
+{
+  "commands": {"node": "...", "python": "...", "hub": "...", "ego": "..."},   # 全路径，rpb 式
+  "ego":     {"found": bool, "version": str|None, "spaces": [{"account":..,"space":..,"login_ok":..,"display_name":..}]},
+  "hub":     {"alive": bool, "url": str},
+  "cloud":   {"reachable": bool, "base_url": str|None, "auth_ok": bool|None},
+  "accounts": [...],           # hub doctor 的登录态矩阵
+  "ready":   bool,
+  "actions": ["..."],          # 未就绪项的下一步（转交用户/Agent 的明确动作）
+}
+
+设计纪律：探测不到就 found=false + actions 提示，绝不臆造路径、绝不假装成功。
+"""
+import json
+import glob
+import os
+import re
+import shutil
+import subprocess
+import sys
+import urllib.request
+import urllib.error
+
+HOME = os.path.expanduser("~")
+HUB_HOME = os.environ.get("MAITIAN_HUB_HOME") or os.path.join(HOME, "maitian-hub")
+HUB_PORT = 8787
+
+
+def find_node():
+    p = shutil.which("node")
+    if p:
+        return p, None
+    return None, "未找到 node（需 ≥22.5）：请安装 https://nodejs.org（LTS）"
+
+
+def find_python():
+    return sys.executable or shutil.which("python3"), None
+
+
+def find_hub():
+    p = os.path.join(HUB_HOME, "src", "hub.mjs")
+    return (p if os.path.isfile(p) else None), (None if os.path.isfile(p) else f"未找到 {p}：先按 agent-install.md 克隆仓库到 {HUB_HOME}（或设 MAITIAN_HUB_HOME）")
+
+
+def find_ego():
+    """探测 ego-browser 全路径（版本取最高）。找不到返回 None——不臆造。"""
+    cands = []
+    if sys.platform.startswith("win"):
+        for pat in (
+            r"C:\Program Files\Citro Labs\ego lite\Application\*\ego-browser.exe",
+            os.path.join(HOME, r"AppData\Local\Citro Labs\ego lite\Application\*\ego-browser.exe"),
+            os.path.join(HOME, r"AppData\Local\Programs\Citro Labs\ego lite\Application\*\ego-browser.exe"),
+        ):
+            cands += glob.glob(pat)
+    elif sys.platform == "darwin":
+        for pat in (
+            "/Applications/ego lite.app/Contents/MacOS/*",
+            os.path.join(HOME, "Applications/ego lite.app/Contents/MacOS/*"),
+        ):
+            cands += glob.glob(pat)
+    else:  # linux（开发环境少见，仍给一次 which 机会）
+        cands += [shutil.which("ego-browser") or ""]
+    cands = [c for c in cands if c and os.path.isfile(c)]
+
+    def ver_of(path):
+        m = re.search(r"(\d+(?:\.\d+)+)", path)
+        return [int(x) for x in m.group(1).split(".")] if m else [0]
+
+    cands.sort(key=ver_of, reverse=True)
+    return (cands[0] if cands else None), (None if cands else "未找到 ego lite：请用户手动安装 Citro Labs ego lite（不得代装）")
+
+
+def http_json(url, timeout=3, headers=None):
+    req = urllib.request.Request(url, headers=headers or {})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read().decode("utf-8"))
+
+
+def probe_hub():
+    try:
+        data = http_json(f"http://127.0.0.1:{HUB_PORT}/api/health")
+        return True, data.get("ok", False)
+    except Exception:
+        return False, None
+
+
+def probe_cloud():
+    base = None
+    cfg = os.path.join(HUB_HOME, "config.json")
+    if os.path.isfile(cfg):
+        try:
+            base = (json.load(open(cfg, encoding="utf-8")).get("cloud") or {}).get("base_url") or None
+        except Exception:
+            pass
+    if not base:
+        return False, None, None, f"cloud.base_url 未配置（编辑 {cfg}）"
+    key = os.environ.get("MAITIAN_WORKSPACE_KEY")
+    try:
+        http_json(base.rstrip("/") + "/v1/ping", timeout=5)
+        auth_ok = None
+        if key:
+            try:
+                http_json(base.rstrip("/") + "/v1/materials?limit=1", timeout=5, headers={"Authorization": "Bearer " + key})
+                auth_ok = True
+            except urllib.error.HTTPError as e:
+                auth_ok = e.code != 401
+        return True, True, auth_ok, (None if auth_ok is not False else "workspace_key 无效（401）：核对 MAITIAN_WORKSPACE_KEY")
+    except Exception as e:
+        return False, False, None, "云不可达: " + str(e)[:120]
+
+
+def hub_accounts_matrix():
+    """调 hub doctor 拿登录态矩阵（hub 未起则返回空+提示）"""
+    try:
+        data = http_json(f"http://127.0.0.1:{HUB_PORT}/api/state", timeout=3)
+        return [
+            {"account": a.get("display_name"), "space": a.get("ego_space_id"),
+             "login_ok": (a.get("login") or {}).get("ok"), "display_name": (a.get("login") or {}).get("displayName")}
+            for a in data.get("accounts", [])
+        ]
+    except Exception:
+        return []
+
+
+def main():
+    actions = []
+    node, node_err = find_node()
+    py, py_err = find_python()
+    hub, hub_err = find_hub()
+    ego, ego_err = find_ego()
+    hub_alive, _ = probe_hub()
+    cloud_reachable, cloud_cfgured, cloud_auth, cloud_err = probe_cloud()
+
+    for err in (node_err, py_err, hub_err, ego_err, cloud_err):
+        if err:
+            actions.append(err)
+    if not hub_alive and hub:
+        actions.append(f"hub 未运行：{node} {hub} serve")
+
+    spaces = hub_accounts_matrix() if hub_alive else []
+
+    out = {
+        "commands": {"node": node, "python": py, "hub": hub, "ego": ego},
+        "ego": {"found": bool(ego), "version": None, "spaces": spaces},
+        "hub": {"alive": hub_alive, "url": f"http://127.0.0.1:{HUB_PORT}"},
+        "cloud": {"reachable": bool(cloud_reachable), "base_url": cloud_cfgured, "auth_ok": cloud_auth},
+        "accounts": spaces,
+        "ready": bool(node and hub and ego and hub_alive and cloud_reachable),
+        "actions": actions,
+    }
+    print(json.dumps(out, ensure_ascii=False, indent=2))
+    return 0 if out["ready"] else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

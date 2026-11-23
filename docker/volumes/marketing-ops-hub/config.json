@@ -1,0 +1,5 @@
+{
+  "_comment": "hub 运行时配置（挂载 :ro，改后 docker compose restart backend 生效）；完整字段见 backend/config/config.example.json",
+  "cadence": { "active_hours": [9, 21] },
+  "quota_default": { "post": 2, "like": 30, "comment": 5, "dm": 10 }
+}

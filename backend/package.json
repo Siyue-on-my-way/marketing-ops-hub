@@ -1,0 +1,15 @@
+{
+  "name": "maitian-hub",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Maitian-Hub · 多平台账号矩阵运营系统 —— 本地中控（调度/防重/配额/审计/大屏）。规格见 issue SIY-221 v1.1。",
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "scripts": {
+    "start": "node src/hub.mjs serve",
+    "test": "node test/smoke.mjs",
+    "redline": "bash test/redline-check.sh"
+  }
+}

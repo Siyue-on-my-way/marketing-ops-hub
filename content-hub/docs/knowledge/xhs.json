@@ -1,0 +1,49 @@
+{
+  "platform": "xhs",
+  "version": 1,
+  "_status": "初始版（待实测）：小红书风险敏感度最高，严格照搬麦田最保守路径",
+  "notes": "保守路径：只读已渲染 DOM、像人一样滚动、低频、绝不调内部接口；笔记标题 ≤20 字；首个真发建议小号。",
+  "pages": {
+    "login": {
+      "url": "https://creator.xiaohongshu.com/",
+      "check_text": "创作服务",
+      "display_name_text": null,
+      "display_name_sel": null
+    },
+    "publish": {
+      "url": "https://creator.xiaohongshu.com/publish/publish",
+      "upload_text": "上传图文",
+      "upload_sel": null,
+      "file_input_sel": null,
+      "form_ready_text": "填写标题",
+      "title_sel": null,
+      "title_focus_text": "填写标题",
+      "body_sel": null,
+      "body_focus_text": "填写描述",
+      "submit_sel": null,
+      "submit_text": "发布",
+      "steps": [
+        "点上传 → waitFor 文件选择器 → setFiles",
+        "等编辑器就绪 → 填标题(≤20字) → 填正文 → 点选推荐话题",
+        "滚动到发布按钮 → 重新取坐标 → 停（人不点，红线1）"
+      ],
+      "verify_note": "笔记管理列表出现新笔记"
+    },
+    "verify": {
+      "url": "https://creator.xiaohongshu.com/publish/noteManage"
+    },
+    "metrics": {
+      "url": "https://creator.xiaohongshu.com/publish/noteManage",
+      "fields": { "views": "浏览量", "likes": "点赞", "comments": "评论", "shares": "分享" }
+    }
+  },
+  "interact": {
+    "like": { "click_text": "赞", "click_sel": null },
+    "comment": { "box_sel": null, "box_focus_text": "说点什么", "send_text": "发送", "send_sel": null },
+    "dm": { "box_sel": null, "box_focus_text": null, "send_text": "发送", "send_sel": null },
+    "follow": { "click_text": "关注", "click_sel": null }
+  },
+  "risk": ["验证码", "re:环境异常|操作频繁|账号异常|安全验证"],
+  "cadence": { "post_gap_sec": [180, 300], "daily_post": 2, "interact_gap_sec": [30, 120] },
+  "limits": { "title_max": 20, "body_max": 1000 }
+}

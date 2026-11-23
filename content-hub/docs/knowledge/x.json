@@ -1,0 +1,45 @@
+{
+  "platform": "x",
+  "version": 1,
+  "_status": "初始版（待实测）：x.com/compose/post",
+  "notes": "280 字符上限（长文走文章功能 v1 不做）；图片附件走媒体入口；data-testid 属稳定属性可用（非 hash 类名）。",
+  "pages": {
+    "login": {
+      "url": "https://x.com/home",
+      "check_text": "Home",
+      "display_name_text": null,
+      "display_name_sel": "[data-testid='SideNav_AccountSwitcher_Button']"
+    },
+    "publish": {
+      "url": "https://x.com/compose/post",
+      "text_sel": "[data-testid='tweetTextarea_0']",
+      "text_focus_text": "What is happening",
+      "media_text": null,
+      "media_sel": "[data-testid='toolBar'] [data-testid='fileInput'] , [aria-label='Add photos or video']",
+      "file_input_sel": "input[data-testid='fileInput']",
+      "submit_sel": "[data-testid='tweetButton']",
+      "submit_text": "Post",
+      "steps": [
+        "打开 compose/post → 填正文(≤280) → 附件走 media 入口",
+        "定位 Post 按钮坐标 → 停（人不点，红线1）"
+      ],
+      "verify_note": "个人主页/通知出现新帖"
+    },
+    "verify": {
+      "url": "https://x.com/i/bookmarks"
+    },
+    "metrics": {
+      "url": "https://analytics.x.com/",
+      "fields": { "views": "Impressions", "likes": "Likes", "comments": "Replies", "shares": "Reposts" }
+    }
+  },
+  "interact": {
+    "like": { "click_text": null, "click_sel": "[data-testid='like']" },
+    "comment": { "box_sel": "[data-testid='tweetTextarea_0']", "box_focus_text": "Post your reply", "send_text": "Reply", "send_sel": "[data-testid='tweetButtonInline']" },
+    "dm": { "box_sel": null, "box_focus_text": "Start a new message", "send_text": null, "send_sel": "[data-testid='dmComposerSendButton']" },
+    "follow": { "click_text": "Follow", "click_sel": "[data-testid='follow']" }
+  },
+  "risk": ["re:unusual activity|verify your identity|Arkose"],
+  "cadence": { "post_gap_sec": [120, 300], "daily_post": 2, "interact_gap_sec": [30, 120] },
+  "limits": { "text_max": 280 }
+}

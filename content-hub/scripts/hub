@@ -1,0 +1,47 @@
+#!/usr/bin/env python3
+"""content-hub/scripts/hub — hub CLI wrapper。
+
+用法：hub <与 node src/hub.mjs 完全一致的参数>
+定位 hub.mjs：MAITIAN_HUB_HOME 环境变量 → 否则相对本脚本 ../../src/hub.mjs → 否则 ~/maitian-hub/src/hub.mjs。
+用列表参数调用（无 shell 引号问题，跨平台）；退出码透传。
+"""
+import json
+import os
+import subprocess
+import sys
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def locate():
+    env = os.environ.get("MAITIAN_HUB_HOME")
+    cands = []
+    if env:
+        cands.append(os.path.join(env, "src", "hub.mjs"))
+    cands.append(os.path.normpath(os.path.join(SCRIPT_DIR, "..", "..", "src", "hub.mjs")))
+    cands.append(os.path.join(os.path.expanduser("~"), "maitian-hub", "src", "hub.mjs"))
+    for c in cands:
+        if os.path.isfile(c):
+            return c
+    print(json.dumps({"ok": False, "error": "hub.mjs 未找到（试过: " + ", ".join(cands) + "）；设 MAITIAN_HUB_HOME 或按 agent-install.md 安装"}, ensure_ascii=False))
+    sys.exit(2)
+
+
+def find_node():
+    import shutil
+    p = shutil.which("node")
+    if not p:
+        print(json.dumps({"ok": False, "error": "未找到 node（需 ≥22.5）"}, ensure_ascii=False))
+        sys.exit(2)
+    return p
+
+
+def main():
+    hub = locate()
+    node = find_node()
+    r = subprocess.run([node, hub] + sys.argv[1:])
+    sys.exit(r.returncode)
+
+
+if __name__ == "__main__":
+    main()

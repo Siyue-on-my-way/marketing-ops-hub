@@ -1,0 +1,9 @@
+{
+  "name": "marketing-ops-hub-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "description": "大屏为零依赖单页；页面单一来源 backend/src/static/index.html，经 compose additional_contexts(backend-shared) 共享进构建，构建在 Dockerfile 多阶段内完成",
+  "scripts": {
+    "build": "echo 'build runs inside Dockerfile multi-stage (page shared from backend via additional_contexts)'"
+  }
+}

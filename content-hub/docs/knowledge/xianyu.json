@@ -1,0 +1,53 @@
+{
+  "platform": "xianyu",
+  "version": 1,
+  "_status": "初始版（待实测）：闲鱼=商品语义（D3）；交易风控最强，M3 预留最宽工时",
+  "notes": "「帖子」= 买卖贴（商品发布）：标题/描述/价格/分类/成色/多图。发布后可被平台审核延迟显示（verify 需容忍）。payload.item = {price, category, condition}。",
+  "pages": {
+    "login": {
+      "url": "https://www.goofish.com/",
+      "check_text": "闲鱼",
+      "display_name_text": null,
+      "display_name_sel": null
+    },
+    "publish": {
+      "url": "https://www.goofish.com/sell",
+      "upload_text": "上传图片",
+      "upload_sel": null,
+      "file_input_sel": null,
+      "form_ready_text": "宝贝描述",
+      "title_sel": null,
+      "title_focus_text": "宝贝标题",
+      "desc_sel": null,
+      "desc_focus_text": "宝贝描述",
+      "price_sel": null,
+      "price_focus_text": "价格",
+      "category_entry_text": "选择分类",
+      "category_input_sel": null,
+      "condition_text": null,
+      "submit_sel": null,
+      "submit_text": "发布",
+      "steps": [
+        "多图上传 → 等表单 → 标题(≤30) → 描述 → 价格 → 分类面板内搜索点选 → 成色点选",
+        "滚动到发布按钮 → 停（人不点，红线1；平台可能再审核延迟）"
+      ],
+      "verify_note": "我的宝贝列表出现新商品（容忍审核延迟）"
+    },
+    "verify": {
+      "url": "https://www.goofish.com/myitems"
+    },
+    "metrics": {
+      "url": "https://www.goofish.com/myitems",
+      "fields": { "views": "浏览", "likes": "想要", "comments": "留言", "shares": null }
+    }
+  },
+  "interact": {
+    "like": { "click_text": "我想要", "click_sel": null },
+    "comment": { "box_sel": null, "box_focus_text": "留言", "send_text": "发送", "send_sel": null },
+    "dm": { "box_sel": null, "box_focus_text": null, "send_text": "发送", "send_sel": null },
+    "follow": { "click_text": null, "click_sel": null }
+  },
+  "risk": ["验证码", "re:环境异常|交易风险|账号受限|安全验证"],
+  "cadence": { "post_gap_sec": [240, 480], "daily_post": 2, "interact_gap_sec": [60, 180] },
+  "limits": { "title_max": 30, "desc_max": 500 }
+}

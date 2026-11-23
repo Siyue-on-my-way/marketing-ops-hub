@@ -1,0 +1,22 @@
+{
+  "hub": {
+    "host": "127.0.0.1",
+    "port": 8787
+  },
+  "ego": {
+    "path": "",
+    "comment": "留空则由 content-hub/scripts/doctor 探测全路径并写入本文件；Windows 形如 C:/Program Files/Citro Labs/ego lite/Application/<版本>/ego-browser.exe"
+  },
+  "cloud": {
+    "base_url": "https://maitian-cloud.example.com",
+    "comment": "workspace_key 一律走环境变量 MAITIAN_WORKSPACE_KEY，禁止写入本文件"
+  },
+  "cadence": {
+    "active_hours": [9, 21],
+    "post_gap_sec": [120, 300],
+    "interact_gap_sec": [30, 120],
+    "session_max_min": 120
+  },
+  "quota_default": { "post": 2, "like": 30, "comment": 5, "dm": 10 },
+  "cold_start_days": 14
+}

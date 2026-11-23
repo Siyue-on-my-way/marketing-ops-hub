@@ -1,0 +1,7 @@
+{
+  "hub_home": "~/maitian-hub",
+  "comment": "agent 会话内使用 content-hub/scripts/doctor 输出的 commands.* 全路径；本文件为 skill 自身可覆盖项",
+  "cloud": { "base_url": "https://maitian-cloud.example.com" },
+  "cadence": { "active_hours": [9, 21] },
+  "notify": { "comment": "v1 通过会话消息+大屏通知；v2 可接 IM webhook" }
+}

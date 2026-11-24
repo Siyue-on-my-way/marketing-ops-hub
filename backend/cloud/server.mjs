@@ -166,15 +166,19 @@ const server = createServer(async (req, res) => {
 
     // ---- Web 门户 API（密码会话；只读 + 管理页，无素材写操作）----
     if (p.startsWith('/webapi/')) {
-      // 注册（开放；邀请码可选）
+      // 注册（开放；凭证=邮箱或手机号；密码重复确认由前端+后端双校验；不做邮件/短信验证）
       if (p === '/webapi/register' && req.method === 'POST') {
-        if (!rateLimit('reg:' + ip, 5, 60000)) return json(res, 429, { ok: false, error: '注册过于频繁，稍后再试' });
+        if (!rateLimit('reg:' + ip, 10, 60000)) return json(res, 429, { ok: false, error: '注册过于频繁，稍后再试' });
         const body = JSON.parse((await readBody(req, 1)).toString('utf8') || '{}');
-        const username = String(body.username || '').trim();
+        const account = String(body.account || body.username || '').trim();
         const password = String(body.password || '');
-        if (!/^[A-Za-z0-9_\-]{3,32}$/.test(username)) return json(res, 400, { ok: false, error: '用户名 3-32 位（字母/数字/_/-）' });
-        if (String(password).length < 8) return json(res, 400, { ok: false, error: '密码至少 8 位' });
-        if (store.db.prepare('SELECT 1 FROM users WHERE username=?').get(username)) return json(res, 400, { ok: false, error: '用户名已存在' });
+        const password2 = body.password2 != null ? String(body.password2) : password;
+        const isEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(account);
+        const isPhone = /^1[3-9]\d{9}$/.test(account);
+        if (!isEmail && !isPhone) return json(res, 400, { ok: false, error: '请输入正确的邮箱或手机号' });
+        if (password.length < 8) return json(res, 400, { ok: false, error: '密码至少 8 位' });
+        if (password !== password2) return json(res, 400, { ok: false, error: '两次输入的密码不一致' });
+        if (store.db.prepare('SELECT 1 FROM users WHERE username=?').get(account)) return json(res, 400, { ok: false, error: '该邮箱/手机号已注册' });
         let tenantId, role = 'member';
         const code = body.invite_code ? String(body.invite_code).trim() : '';
         if (code) {
@@ -186,25 +190,25 @@ const server = createServer(async (req, res) => {
           store.db.prepare('UPDATE invites SET used_count=used_count+1 WHERE code=?').run(code);
         } else {
           tenantId = genId('t');
-          store.db.prepare('INSERT INTO tenants(id, name, owner_user_id, created_at) VALUES(?,?,NULL,?)').run(tenantId, username + ' 的团队', nowIso());
+          store.db.prepare('INSERT INTO tenants(id, name, owner_user_id, created_at) VALUES(?,?,NULL,?)').run(tenantId, account + ' 的团队', nowIso());
           role = 'owner'; // owner_user_id 在建用户后回填
         }
         const userId = genId('u');
         if (role === 'owner') store.db.prepare('UPDATE tenants SET owner_user_id=? WHERE id=?').run(userId, tenantId);
         store.db.prepare('INSERT INTO users(id, tenant_id, username, password_hash, role, display_name, created_at) VALUES(?,?,?,?,?,?,?)')
-          .run(userId, tenantId, username, hashPassword(password), role, username, nowIso());
+          .run(userId, tenantId, account, hashPassword(password), role, account, nowIso());
         const key = createApiKey(store.db, userId, tenantId, '默认密钥');
         const tenant = store.db.prepare('SELECT name FROM tenants WHERE id=?').get(tenantId);
         const session = { uid: userId, tenant: tenantId, exp: Date.now() + SESSION_TTL_MS, nonce: randomBytes(8).toString('hex') };
         return json(res, 200, {
-          ok: true, username, role, tenant_id: tenantId, tenant_name: tenant.name, api_key: key.api_key,
+          ok: true, account, username: account, role, tenant_id: tenantId, tenant_name: tenant.name, api_key: key.api_key,
         }, { 'set-cookie': sessionCookie(session) });
       }
 
-      // 登录
+      // 登录（凭证=邮箱/手机号；兼容旧字母用户名）
       if (p === '/webapi/login' && req.method === 'POST') {
         const body = JSON.parse((await readBody(req, 1)).toString('utf8') || '{}');
-        const username = String(body.username || '').trim();
+        const username = String(body.account || body.username || '').trim();
         if (!rateLimit('login:' + ip + ':' + username, 5, 600000)) return json(res, 429, { ok: false, error: '失败次数过多，请 10 分钟后再试' });
         const user = store.db.prepare('SELECT * FROM users WHERE username=? AND revoked_at IS NULL').get(username);
         if (!user || !verifyPassword(String(body.password || ''), user.password_hash)) {

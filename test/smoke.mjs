@@ -278,16 +278,22 @@ try {
   };
 
   // 注册：无邀请码 → 自建 workspace 为 owner，返回默认 api_key
-  let r = await wapi(null, '/webapi/register', { method: 'POST', body: { username: 'alice', password: 'alice-pass-123' } });
-  check('注册 alice（自建 workspace + 默认密钥）', r.ok && r.api_key && r.role === 'owner' && r.tenant_id, JSON.stringify(r).slice(0, 120));
+  let r = await wapi(null, '/webapi/register', { method: 'POST', body: { account: 'alice@test.local', password: 'alice-pass-123', password2: 'alice-pass-123' } });
+  check('注册 alice（邮箱，自建 workspace + 默认密钥）', r.ok && r.api_key && r.role === 'owner' && r.tenant_id, JSON.stringify(r).slice(0, 120));
   const aliceKey = r.api_key, aliceTenant = r.tenant_id;
-  r = await wapi(null, '/webapi/register', { method: 'POST', body: { username: 'alice', password: 'alice-pass-123' } });
-  check('重复用户名拒绝', !r.ok && String(r.error).includes('已存在'));
-  r = await wapi(null, '/webapi/register', { method: 'POST', body: { username: 'bob', password: 'short' } });
+  r = await wapi(null, '/webapi/register', { method: 'POST', body: { account: 'alice@test.local', password: 'alice-pass-123', password2: 'alice-pass-123' } });
+  check('重复邮箱拒绝', !r.ok && String(r.error).includes('已注册'));
+  r = await wapi(null, '/webapi/register', { method: 'POST', body: { account: 'bob@test.local', password: 'short', password2: 'short' } });
   check('弱密码拒绝', !r.ok && String(r.error).includes('8 位'));
+  r = await wapi(null, '/webapi/register', { method: 'POST', body: { account: 'bad-account', password: 'long-enough-pw', password2: 'long-enough-pw' } });
+  check('非邮箱/手机号拒绝', !r.ok && String(r.error).includes('邮箱或手机号'));
+  r = await wapi(null, '/webapi/register', { method: 'POST', body: { account: 'bob@test.local', password: 'bob-pass-12345', password2: 'different-123' } });
+  check('两次密码不一致拒绝', !r.ok && String(r.error).includes('不一致'));
+  r = await wapi(null, '/webapi/register', { method: 'POST', body: { account: '13912345678', password: 'phone-pass-123', password2: 'phone-pass-123' } });
+  check('手机号注册', r.ok && r.role === 'owner');
 
   // 登录 + cookie 会话
-  r = await wapi('alice', '/webapi/login', { method: 'POST', body: { username: 'alice', password: 'alice-pass-123' } });
+  r = await wapi('alice', '/webapi/login', { method: 'POST', body: { account: 'alice@test.local', password: 'alice-pass-123' } });
   check('登录发 cookie 会话', r.ok && !!jar.alice);
   r = await wapi('alice', '/webapi/materials?limit=50');
   check('alice 素材台可达', r.ok && Array.isArray(r.items));
@@ -312,7 +318,7 @@ try {
   const newKey = r.api_key;
   check('新建密钥（明文仅此一次）', !!newKey && Array.isArray(r.keys) && r.keys.length === 2);
   res = await fetch(`${CLOUD}/v1/whoami`, { headers: { authorization: 'Bearer ' + newKey } });
-  check('新密钥 whoami', res.status === 200 && (await res.json()).user === 'alice');
+  check('新密钥 whoami', res.status === 200 && (await res.json()).user === 'alice@test.local');
   const keysNow = (await wapi('alice', '/webapi/me/keys')).keys;
   const defaultKey = keysNow.find((k) => k.name === '默认密钥');
   r = await wapi('alice', '/webapi/me/keys/' + defaultKey.id, { method: 'DELETE', body: {} });
@@ -325,16 +331,16 @@ try {
   // 邀请链接：alice 邀请 bob 加入同一 workspace
   r = await wapi('alice', '/webapi/me/invite');
   check('生成邀请链接', r.ok && r.invite_code);
-  r = await wapi(null, '/webapi/register', { method: 'POST', body: { username: 'bob', password: 'bob-pass-12345', invite_code: r.invite_code } });
+  r = await wapi(null, '/webapi/register', { method: 'POST', body: { account: 'bob@test.local', password: 'bob-pass-12345', password2: 'bob-pass-12345', invite_code: r.invite_code } });
   check('bob 持邀请码注册加入 alice workspace', r.ok && r.role === 'member' && r.tenant_id === aliceTenant, JSON.stringify({ t: r.tenant_id, at: aliceTenant }));
   const bobKey = r.api_key;
-  r = await wapi('bob', '/webapi/login', { method: 'POST', body: { username: 'bob', password: 'bob-pass-12345' } });
+  r = await wapi('bob', '/webapi/login', { method: 'POST', body: { account: 'bob@test.local', password: 'bob-pass-12345' } });
   check('bob 登录获得会话', r.ok && !!jar.bob);
   r = await wapi('bob', '/webapi/materials?limit=50');
   check('bob 看得到 workspace 内素材', r.ok && r.items.some((i) => i.id === aliceMat));
   r = await wapi('alice', '/webapi/members');
   check('成员列表含 alice/bob', r.members.length === 2);
-  const bobId = r.members.find((x) => x.username === 'bob').id;
+  const bobId = r.members.find((x) => x.username === 'bob@test.local').id;
   r = await wapi('alice', '/webapi/members/' + bobId, { method: 'DELETE', body: {} });
   check('owner 移除成员', r.ok);
   res = await fetch(`${CLOUD}/v1/whoami`, { headers: { authorization: 'Bearer ' + bobKey } });
@@ -343,7 +349,7 @@ try {
   // 改密 + legacy whoami
   r = await wapi('alice', '/webapi/password', { method: 'POST', body: { old: 'alice-pass-123', new: 'alice-pass-456' } });
   check('改密成功', r.ok);
-  r = await wapi('alice', '/webapi/login', { method: 'POST', body: { username: 'alice', password: 'alice-pass-123' } });
+  r = await wapi('alice', '/webapi/login', { method: 'POST', body: { account: 'alice@test.local', password: 'alice-pass-123' } });
   check('旧密码失效', r.status === 401);
   res = await fetch(`${CLOUD}/v1/whoami`, { headers: H });
   const lw = await res.json();

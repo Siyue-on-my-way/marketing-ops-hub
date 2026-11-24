@@ -75,9 +75,9 @@ function renderAuth(mode) {
     <div class="tabs"><button id="t-login">登录</button><button id="t-reg">注册</button></div>
     <div class="err" id="a-err"></div>
     ${mode==='reg' ? inv : ''}
-    <input id="i-user" placeholder="用户名（3-32 位字母/数字/_/-）" autocomplete="username">
+    <input id="i-user" placeholder="邮箱或手机号" autocomplete="username">
     <input id="i-pass" type="password" placeholder="密码（≥8 位）" autocomplete="${mode==='reg'?'new-password':'current-password'}">
-    ${mode==='reg' ? '<input id="i-pass2" type="password" placeholder="再输一遍密码">' : ''}
+    ${mode==='reg' ? '<input id="i-pass2" type="password" placeholder="再次输入密码（两次需一致）">' : ''}
     <button id="a-go" style="width:100%">${mode==='reg' ? (INVITE?'加入该 workspace 并注册':'注册（创建我的 workspace）') : '登录'}</button>
     <div class="meta" style="margin-top:10px">注册即创建自己的 workspace（注册人=拥有者）；持邀请链接注册则加入对方 workspace。CLI 用「密钥管理」页的默认密钥连接。</div>
   </div>`;
@@ -85,18 +85,18 @@ function renderAuth(mode) {
   $('#t-reg').onclick = () => renderAuth('reg');
   $('#a-go').onclick = async () => {
     const err = $('#a-err'); err.textContent = '';
-    const username = $('#i-user').value.trim(), password = $('#i-pass').value;
-    const e1 = unCheck(username); if (e1) { err.textContent = e1; return; }
+    const account = $('#i-user').value.trim(), password = $('#i-pass').value;
+    if (!account) { err.textContent = '请输入邮箱或手机号'; return; }
     if (mode === 'reg') {
       const e2 = pwCheck(password); if (e2) { err.textContent = e2; return; }
-      if (password !== $('#i-pass2').value) { err.textContent = '两次密码不一致'; return; }
+      if (password !== $('#i-pass2').value) { err.textContent = '两次输入的密码不一致'; return; }
       const invite = ($('#i-inv') && $('#i-inv').value.trim()) || '';
-      const r = await api('/webapi/register', { method:'POST', body:{ username, password, invite_code: invite || undefined } });
+      const r = await api('/webapi/register', { method:'POST', body:{ account, password, password2: $('#i-pass2').value, invite_code: invite || undefined } });
       if (!r.ok) { err.textContent = r.error || '注册失败'; return; }
-      ME = { username, role: r.role, tenant_id: r.tenant_id, tenant_name: r.tenant_name };
+      ME = { username: r.account, role: r.role, tenant_id: r.tenant_id, tenant_name: r.tenant_name };
       showKeyOnce(r.api_key);
     } else {
-      const r = await api('/webapi/login', { method:'POST', body:{ username, password } });
+      const r = await api('/webapi/login', { method:'POST', body:{ account, password } });
       if (!r.ok) { err.textContent = r.error || '登录失败'; return; }
       ME = { username: r.username, role: r.role, tenant_id: r.tenant_id, tenant_name: r.tenant_name };
     }

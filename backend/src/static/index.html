@@ -89,18 +89,30 @@ function toast(msg, ok = true) {
 
 async function refresh() {
   STATE = await api('/api/state');
+  if (!STATE.ok) {
+    // 401 等错误：给出明确指引，绝不静默空白（曾因此被误认为「网站打不开」）
+    $('#now').textContent = '';
+    $('#main').innerHTML = '<div class="panel"><h2>需要访问令牌</h2><div class="empty">此页面受 SERVER_TOKEN 保护。<br><br>' +
+      '请在地址栏追加 <code>?token=&lt;SERVER_TOKEN&gt;</code> 访问（令牌向部署管理员获取，一次输入后本浏览器会记住）。' +
+      '<br><br><span class="meta">错误详情：' + esc(STATE.error || 'unknown') + '</span></div></div>';
+    return;
+  }
   $('#now').textContent = '数据时间 ' + new Date(STATE.now).toLocaleString();
   render();
 }
 
 function render() {
-  const tab = $('.nav-active, nav button.active')?.dataset.tab || 'queue';
-  const main = $('#main');
-  if (tab === 'queue') renderQueue(main);
-  else if (tab === 'proposals') renderProposals(main);
-  else if (tab === 'calendar') renderCalendar(main);
-  else if (tab === 'health') renderHealth(main);
-  else renderAudit(main);
+  try {
+    const tab = $('.nav-active, nav button.active')?.dataset.tab || 'queue';
+    const main = $('#main');
+    if (tab === 'queue') renderQueue(main);
+    else if (tab === 'proposals') renderProposals(main);
+    else if (tab === 'calendar') renderCalendar(main);
+    else if (tab === 'health') renderHealth(main);
+    else renderAudit(main);
+  } catch (e) {
+    $('#main').innerHTML = '<div class="panel"><h2>渲染异常</h2><div class="empty">' + esc(String(e && e.message || e)) + '</div></div>';
+  }
 }
 
 // 自进化提案人审（EVOLUTION-SPEC §2：AI 有提案权，人有一票否决权，approve 后 hub 才写 L2 配置）

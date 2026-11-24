@@ -1,7 +1,7 @@
 // store.mjs — maitian-cloud 存储：SQLite 元数据 + 文件落盘 data/materials/<yyyy-mm>/<id>/
 import { DatabaseSync } from 'node:sqlite';
 import { createHash } from 'node:crypto';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 
 const DDL = `
@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS keys(
 `;
 
 export const ALLOWED_TAGS = ['common', 'xhs', 'douyin', 'tiktok', 'yt', 'bili', 'x', 'xianyu'];
+export const PLATFORMS = ALLOWED_TAGS.filter((t) => t !== 'common'); // 知识包/策略热更只认七平台
 
 export function sha256(buf) {
   return createHash('sha256').update(buf).digest('hex');
@@ -43,6 +44,7 @@ export function openStore(dataDir) {
   return {
     db,
     materialsDir: join(dataDir, 'materials'),
+    knowledgeDir: join(dataDir, 'knowledge'),          // 回路②：知识包热更分发（versions/ 同级归档）
     secretFile: join(dataDir, '.sign_secret'),
   };
 }
@@ -69,4 +71,14 @@ export function saveMaterialFile(store, id, filename, buf) {
   const file = join(dir, safe);
   writeFileSync(file, buf);
   return file;
+}
+
+/** 版本归档清理：只保留最近 keep 版（hub 侧同规则，EVOLUTION-SPEC §6.2） */
+export function pruneVersions(dir, keep = 10) {
+  try {
+    const old = readdirSync(dir).filter((f) => f.endsWith('.json')).sort();
+    for (const f of old.slice(0, Math.max(0, old.length - keep))) {
+      try { rmSync(join(dir, f)); } catch { /* 单个清理失败不阻塞 */ }
+    }
+  } catch { /* 目录不存在等 */ }
 }

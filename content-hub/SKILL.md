@@ -1,6 +1,6 @@
 ---
 name: content-hub
-description: 多平台账号矩阵运营——素材发布/互动养号/私聊/复盘。触发词：发一条、养号巡检、话题互动、私聊好友、看账号健康、复盘。适用 Claude Code / Codex / deepseek-harness / WorkBuddy 等任意 agent（无专有语法，scripts 零第三方依赖）。
+description: 多平台账号矩阵运营——素材发布/互动养号/私聊/复盘/自进化。触发词：发一条、养号巡检、话题互动、私聊好友、看账号健康、复盘、生成策略报告、修复 <platform> 适配器。适用 Claude Code / Codex / deepseek-harness / WorkBuddy 等任意 agent（无专有语法，scripts 零第三方依赖）。
 ---
 
 # content-hub · 多平台账号矩阵运营 skill
@@ -27,6 +27,7 @@ description: 多平台账号矩阵运营——素材发布/互动养号/私聊/�
 | 互动 | 读话题页→选目标→AI 草拟（评论必须引用对方内容） | **大屏逐条 approve（或明确拒绝）** |
 | 私聊 | AI 个性化草拟（每会话 1 条） | **大屏 approve 后才发送** |
 | 复盘 | `hub review` 生成卡片（第 1/3/7 天+同龄对比） | 阅读结论，决定下期策略 |
+| 自进化 | 读 metrics/失败现场 → AI 分析 → 产出提案 diff 给用户过目 → `hub proposal add` 入库 | **大屏「进化提案」逐条 approve/reject（AI 只能提案，生效必须人审）** |
 
 **未实现 ≠ 假装实现**：任何一步失败/未跑通，如实向用户报告状态，不伪装成功。
 
@@ -58,7 +59,7 @@ description: 多平台账号矩阵运营——素材发布/互动养号/私聊/�
 1. `doctor` 自检（ego/hub/云 全绿才继续；不全绿先执行 `actions[]`）。
 2. `hub doctor`：确认各账号登录态矩阵；未登录的账号先走登录门禁（用户扫码）。
 3. 拉素材候选：`GET <cloud>/v1/materials?platform=<目标>`（含 common）→ 用户选素材 → `claim` 占用锁（30 分钟）。
-4. AI 按平台改写（L1）：每平台独立 payload `{title, text, tags[]}`，产出**差异表**给用户过目（平台限制：小红书标题 ≤20 字；B站标题 ≤80；X ≤280；TikTok ≤2200；闲鱼按商品语义：标题/描述/价格/分类/成色）。**用户确认后才写 payload 文件**。
+4. AI 按平台改写（L1）：每平台独立 payload `{title, text, tags[]}`，产出**差异表**给用户过目（平台限制：小红书标题 ≤20 字；B站标题 ≤80；X ≤280；TikTok ≤2200；闲鱼按商品语义：标题/描述/价格/分类/成色）。改写前先 `hub strategy show <platform>` 读策略库，**差异表标注「依据策略 v<n>」**（哪类标题/标签/时段在该号数据好）。**用户确认后才写 payload 文件**。
 5. `hub plan <material_id> --platforms ... --accounts ... --payload-file <文件>`（排期落库，自动防重/查配额）。
 6. `hub run --due`：ego 到点填写（上传素材→填表→**review 账号停在发布按钮前**；auto 账号自动点发布→截图）。
 7. **review 账号**：通知用户去各平台亲手点发布（大屏 :8787 或消息）；**auto 账号**：跳过此步，系统已自动发布并回读。
@@ -69,7 +70,7 @@ description: 多平台账号矩阵运营——素材发布/互动养号/私聊/�
 
 1. `hub health`：看 trust_score/配额余量/登录态。
 2. 按剩余配额生成互动计划（冷启动账号：配额减半、无发布）。
-3. 读话题页快照选目标（Agent 用 ego 快照，只读）。
+3. 读话题页快照选目标（Agent 用 ego 快照，只读）；选目标前 `hub strategy show <platform>` 读策略库 **engage 段**（哪类目标号转化高，回路③产出）。
 4. AI 草拟：**评论必须引用对方内容具体点，禁模板**。
 5. 大屏人审：用户逐条 approve（或 `hub approve batch:today` 批今日批次）。
 6. `hub interact <account_id> --plan <plan.json> --execute`：按 30–120s 拟人间隔执行（浏览目标 ≥ 阅读时长 → 动作 → 截图）。
@@ -84,6 +85,35 @@ description: 多平台账号矩阵运营——素材发布/互动养号/私聊/�
 `hub review <post_id> [天数]` → 第 1/3/7 天卡片（views/likes/comments/shares/followers_delta + 与上期同龄对比）→ Agent 解读并给下期建议。
 
 ---
+
+## 自进化（四条回路；AI 有提案权，人有一票否决权）
+
+闭环：**采集(metrics/审计/失败快照) → AI 分析(本会话内) → 变更提案 → 大屏人审 → L2 配置 version+1 生效 → hub 确定性执行(不变) → 再采集**。
+
+**铁律（优先级最高）**：
+- **proposals 队列是唯一进化入口**——直接改 `strategies/*.json` / `knowledge/*.json` 不经提案人审**不生效**（hub 只在 approve 时写 L2，version+1 + 归档；写死在任何其他路径都算违规）。
+- 进化只发生在 L2 配置层（策略库/知识包）+ 本会话分析器；hub 执行层、适配器流程、红线/坑位/防重**不进任何进化回路**。
+- **进化回路不得提议任何配额放宽**——hub 代码层强制只收紧（方向锁死，提示词不是安全边界）；收到放宽类提议直接拒绝并记录。
+
+### 生成策略报告（回路①③，建议每周）
+1. 取数：近 14 天 posts+metrics（`hub review` / 大屏），按**标题模式/标签/发布小时**分组对比；互动侧看 engagements 执行后的转化。
+2. 分析：找有数据支撑的模式（如「疑问句式标题 day1 views 1.8×」），每条带 evidence（样本与倍数），给 confidence。
+3. 提案：读当前 `hub strategy show <platform>` → 构造 diff `{summary, current_version, proposed:<完整新策略>, evidence:[...]}` → 写入文件 → `hub proposal add --kind strategy --platform <p> --payload-file <f>`（互动目标偏好改 `proposed.engage.target_traits`，kind 用 engage，流程同）。
+4. 用户在大屏「进化提案」approve → hub 写策略库 version+1（旧版归档 `strategies/versions/`，保留 10 版）；之后「发一条」改写自动引用新版本。
+5. 当前版本与乐观锁：提案的 current_version 必须等于库内当前版本，否则 hub 拒绝入库（重新分析再提）。
+
+### 修复 <platform> 适配器（回路②，平台改版时）
+1. 前提：该平台存在 failed 记录——读大屏审计时间线对应条目的 `detail.dom_snapshot`（页面 innerText 前 4000 字）+ 失败截图。
+2. AI 对照当前知识包版本逐字段比对，产出**字段级**提案：`{summary, base_version, changes:[{path, value}]}`，path 只允许 `*_sel` / `*_text` / `check_texts` / `form_ready_text` / `risk`。
+3. **禁止**：改 `steps`（流程结构）、`cadence`/`limits`（节奏与硬限制）——那些是流程级/人工域；提案入库时 hub 直接拒绝。
+4. 入库必须带依据：`hub proposal add --kind knowledge --platform <p> --payload-file <f> --basis dom_snapshot|screenshot`，无依据 hub 拒绝入库。
+5. 用户 approve → hub 写本地知识包 version+1 → 自动推云端（`PUT /v1/knowledge/:platform`，乐观锁）→ 其他设备 `hub knowledge sync` 拉到（daemon 每 30 分钟也自动同步；本地改过未推送时先归档再覆盖，绝不静默丢失）。
+
+### 配额收紧提案（回路④，账号风控频发时）
+AI 分析 RISK_SIGNAL 审计 → 某号风控频发 → 提案下调该号配额：`{reason, old:{...}, new:{...}}` → `hub proposal add --kind quota --account <account_id> --payload-file <f>` → 人审 approve 后写入账号 override 并审计。**方向由 hub 代码强制：任何上调/超基线直接拒绝入库**；解除收紧须人工操作，进化无放宽路径。
+
+### 反馈采集（回路③，占位）
+`hub engage feedback <engagement_id>`：目标页回访（粉丝/互动数变化）的只读采集**本期为占位实现**（规格 §4.3），不阻塞策略消费；engage 段的演进暂依赖会话内分析已有数据。
 
 ## 不卡住原则
 

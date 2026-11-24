@@ -104,7 +104,11 @@ export async function run(P) {
     return out({ ok: true, data, shot });
   } catch (e) {
     let shot = null;
+    let dom_snapshot = null;
     try { if (page) shot = await saveShot(page, P.paths.shotDir, P.paths.shotName + '-err'); } catch {}
-    return out({ ok: false, error: String((e && e.stack) || e), shot });
+    // 回路②失败现场采集（EVOLUTION-SPEC §4.2）：catch 分支补采页面 innerText 前 4000 字，
+    // hub 落入 audit_log.detail 的 dom_snapshot 字段，供「修复 <platform> 适配器」AI 读现场。
+    try { if (page) dom_snapshot = String((await pageText(page)) || '').slice(0, 4000); } catch {}
+    return out({ ok: false, error: String((e && e.stack) || e), shot, dom_snapshot });
   }
 }

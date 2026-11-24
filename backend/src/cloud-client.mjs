@@ -138,6 +138,18 @@ export async function flushOutbox(db, cfg, key) {
   return { flushed };
 }
 
+// ---------- 知识包热更（回路②，EVOLUTION-SPEC §4.2） ----------
+
+/** GET /v1/knowledge?platform → {ok, json, version, updated_at}；404=云端尚无 */
+export async function getKnowledge(cfg, key, platform) {
+  return api(cfg, key, 'GET', `/v1/knowledge?platform=${encodeURIComponent(platform)}`);
+}
+
+/** PUT /v1/knowledge/:platform {json, base_version} 乐观锁；409=VERSION_CONFLICT */
+export async function putKnowledge(cfg, key, platform, json, baseVersion) {
+  return api(cfg, key, 'PUT', `/v1/knowledge/${encodeURIComponent(platform)}`, { json, base_version: baseVersion });
+}
+
 /** 下载素材到本地缓存并登记 materials_cache；返回本地路径 */
 export async function downloadMaterial(db, cfg, key, materialId) {
   const cached = db.prepare('SELECT local_path FROM materials_cache WHERE cloud_id=?').get(materialId);

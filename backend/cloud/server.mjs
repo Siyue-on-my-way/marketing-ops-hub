@@ -9,14 +9,17 @@
 //   GET  /v1/materials/:id/download   -> 302 签名 URL（1 天有效）-> /v1/files/:id?exp&sig
 //   POST /v1/journal                  {device, action, account_id?, detail, ts} -> {ok}
 //   POST /v1/keys/rotate              (旧 key 调用) -> {new_key, old_expires_at}  新旧 7 天双活
+//   GET  /v1/knowledge?platform       -> {ok, json, version, updated_at}   知识包热更（回路②）
+//   PUT  /v1/knowledge/:platform      {json, base_version} -> {ok, version}  乐观锁；冲突 409
+//   GET  /v1/knowledge/versions/:platform -> {ok, versions[]}  云端版本归档列表
 //   GET  /v1/ping                     存活探测（免鉴权）
 import { createServer } from 'node:http';
 import { createHmac, randomBytes } from 'node:crypto';
-import { readFileSync, existsSync, statSync, writeFileSync, readdirSync } from 'node:fs';
+import { readFileSync, existsSync, statSync, writeFileSync, readdirSync, mkdirSync } from 'node:fs';
 import { join, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { dirname } from 'node:path';
-import { openStore, ensureKey, keyValid, sha256, saveMaterialFile, ALLOWED_TAGS } from './store.mjs';
+import { openStore, ensureKey, keyValid, sha256, saveMaterialFile, ALLOWED_TAGS, PLATFORMS, pruneVersions } from './store.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = process.env.MAITIAN_DATA_DIR || join(__dirname, 'data');
@@ -218,6 +221,53 @@ const server = createServer(async (req, res) => {
       store.db.prepare('INSERT INTO journals(device, action, account_id, detail, ts) VALUES(?,?,?,?,?)')
         .run(body.device || null, body.action || null, body.account_id || null, typeof body.detail === 'string' ? body.detail : JSON.stringify(body.detail || {}), body.ts || new Date().toISOString());
       return json(res, 200, { ok: true });
+    }
+
+    // ---- 知识包热更（回路②，EVOLUTION-SPEC §4.2）：GET 拉取 / PUT 上传（乐观锁，冲突 409）----
+    if (p === '/v1/knowledge' && req.method === 'GET') {
+      const platform = u.searchParams.get('platform');
+      if (!platform || !PLATFORMS.includes(platform)) return json(res, 400, { ok: false, error: 'platform 必填且 ∈ ' + PLATFORMS.join(',') });
+      const file = join(store.knowledgeDir, platform + '.json');
+      if (!existsSync(file)) return json(res, 404, { ok: false, error: 'knowledge_not_found: ' + platform + '（尚未有任何设备推送过）' });
+      const j = JSON.parse(readFileSync(file, 'utf8'));
+      return json(res, 200, { ok: true, json: j, version: j.version, updated_at: j.updated_at || null });
+    }
+
+    if ((m = p.match(/^\/v1\/knowledge\/([a-z]+)$/)) && req.method === 'PUT') {
+      const platform = m[1];
+      if (!PLATFORMS.includes(platform)) return json(res, 400, { ok: false, error: 'platform ∈ ' + PLATFORMS.join(',') });
+      let body;
+      try { body = JSON.parse((await readBody(req, 5)).toString('utf8') || '{}'); } catch { return json(res, 400, { ok: false, error: 'body 不是合法 JSON' }); }
+      const j = body.json;
+      if (!j || typeof j !== 'object' || Array.isArray(j) || j.platform !== platform) {
+        return json(res, 400, { ok: false, error: 'body.json 必须是知识包对象且 json.platform=' + platform });
+      }
+      const bv = Number(body.base_version);
+      if (!Number.isInteger(bv) || bv < 0) return json(res, 400, { ok: false, error: 'body.base_version 必须是非负整数（乐观锁）' });
+      if (j.version !== bv + 1) return json(res, 400, { ok: false, error: `json.version 必须等于 base_version+1（${bv}+1=${bv + 1}）` });
+      const file = join(store.knowledgeDir, platform + '.json');
+      let cur = null;
+      if (existsSync(file)) {
+        cur = JSON.parse(readFileSync(file, 'utf8'));
+        if (cur.version !== bv) return json(res, 409, { ok: false, error: `VERSION_CONFLICT: 云端当前 v${cur.version}，base_version=${bv}——先 GET 合并再推` });
+      }
+      mkdirSync(store.knowledgeDir, { recursive: true });
+      if (cur) { // 覆盖前归档（保留最近 10 版，§6.2）
+        const vdir = join(store.knowledgeDir, 'versions');
+        mkdirSync(vdir, { recursive: true });
+        writeFileSync(join(vdir, `${platform}-v${cur.version}-${new Date().toISOString().replace(/[:.]/g, '-')}.json`), JSON.stringify(cur, null, 2));
+        pruneVersions(vdir);
+      }
+      writeFileSync(file, JSON.stringify(j, null, 2) + '\n');
+      return json(res, 200, { ok: true, version: j.version });
+    }
+
+    if ((m = p.match(/^\/v1\/knowledge\/versions\/([a-z]+)$/)) && req.method === 'GET') {
+      const platform = m[1];
+      if (!PLATFORMS.includes(platform)) return json(res, 400, { ok: false, error: 'platform ∈ ' + PLATFORMS.join(',') });
+      const vdir = join(store.knowledgeDir, 'versions');
+      const versions = existsSync(vdir) ? readdirSync(vdir).filter((f) => f.startsWith(platform + '-v') && f.endsWith('.json')).sort() : [];
+      return json(res, 200, { ok: true, platform, versions });
     }
 
     if (p === '/v1/keys/rotate' && req.method === 'POST') {

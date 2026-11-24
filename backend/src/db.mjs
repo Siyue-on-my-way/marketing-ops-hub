@@ -60,6 +60,18 @@ CREATE TABLE IF NOT EXISTS kv(                    -- 状态机断点/登录态�
 CREATE TABLE IF NOT EXISTS journal_outbox(        -- 云不可达时 journal 本地缓存补传
   id INTEGER PRIMARY KEY AUTOINCREMENT, payload TEXT NOT NULL, created_at TEXT, sent_at TEXT
 );
+-- 自进化（EVOLUTION-SPEC §4.1）：proposals 是唯一进化入口——AI 只能提提案，人审 approve 后
+-- hub 才写 L2 配置（策略库/知识包/配额收紧）；直接改配置文件不走提案不生效（铁律）。
+CREATE TABLE IF NOT EXISTS proposals(
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,                -- strategy|knowledge|quota|engage
+  platform TEXT,                     -- 平台维度提案（quota 可为空，用 account_id 定位）
+  account_id TEXT,                   -- quota 提案的目标账号
+  payload TEXT NOT NULL,             -- JSON：提案内容（结构按规格 §4.1–§4.4）
+  basis TEXT,                        -- knowledge 提案依据：dom_snapshot|screenshot（缺 → hub 拒绝入库）
+  status TEXT DEFAULT 'drafted',     -- drafted→approved|rejected（applied 即 approved 且已落地）
+  created_at TEXT, decided_at TEXT, applied_version INTEGER
+);
 CREATE INDEX IF NOT EXISTS idx_posts_status_sched ON posts(status, scheduled_at);
 CREATE INDEX IF NOT EXISTS idx_posts_account ON posts(account_id, scheduled_at);
 CREATE INDEX IF NOT EXISTS idx_eng_status ON engagements(status);
@@ -75,6 +87,8 @@ export function openDb(dbPath) {
   // 轻量迁移：已有库补列（红线1 v2：auto_publish 自动发布开关）
   const acctCols = db.prepare('PRAGMA table_info(accounts)').all().map((c) => c.name);
   if (!acctCols.includes('auto_publish')) db.exec('ALTER TABLE accounts ADD COLUMN auto_publish INTEGER DEFAULT 0');
+  // 自进化回路④：账号级配额覆盖（EVOLUTION-SPEC §4.4；hub 代码强制 ≤ 基线 clamp，只许收紧）
+  if (!acctCols.includes('quota_override')) db.exec("ALTER TABLE accounts ADD COLUMN quota_override TEXT");
   return db;
 }
 

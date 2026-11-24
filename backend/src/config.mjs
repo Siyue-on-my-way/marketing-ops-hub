@@ -41,6 +41,10 @@ export function loadConfig() {
     knowledge: process.env.MAITIAN_KNOWLEDGE_DIR
       || [join(ROOT, '..', 'content-hub', 'docs', 'knowledge'), join(ROOT, 'knowledge')].find(existsSync)
       || join(ROOT, '..', 'content-hub', 'docs', 'knowledge'),
+    // 策略库（自进化回路①③的 L2 层，EVOLUTION-SPEC §4.1）：同知识包的目录约定
+    strategies: process.env.MAITIAN_STRATEGIES_DIR
+      || [join(ROOT, '..', 'content-hub', 'docs', 'strategies'), join(ROOT, 'strategies')].find(existsSync)
+      || join(ROOT, '..', 'content-hub', 'docs', 'strategies'),
   };
   if (process.env.MAITIAN_CLOUD_URL) cfg.cloud.base_url = process.env.MAITIAN_CLOUD_URL;
   return cfg;

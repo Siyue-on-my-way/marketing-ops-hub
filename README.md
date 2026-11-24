@@ -19,7 +19,7 @@ marketing-ops-hub/
 │   ├── nginx-frontend.conf       # SPA 回退
 │   ├── Dockerfile                # 多阶段：node:22-alpine → nginx:alpine
 │   └── .dockerignore
-├── content-hub/                  # skill 包（各用户本机 agent 载体：SKILL.md/doctor/知识包/坑位文档）
+├── content-hub/                  # skill 包（各用户本机 agent 载体：SKILL.md/doctor/知识包/策略库/坑位文档）
 ├── test/                         # 冒烟测试（mock 级，不需真机）+ 红线自检
 ├── .gitignore
 └── docker/
@@ -54,12 +54,26 @@ marketing-ops-hub/
 ## 开发与测试
 
 ```bash
-node test/smoke.mjs        # 62 项 mock 级冒烟（不需要真机 ego/平台）
+node test/smoke.mjs        # 114 项 mock 级冒烟（不需要真机 ego/平台；含自进化四回路）
 bash test/redline-check.sh # 红线自检：适配器代码「点击发布/提交」零命中；无写死 hash 类名
 ```
+
+## 自进化（docs/EVOLUTION-SPEC-v1.md）
+
+闭环：采集(metrics/审计/失败快照) → AI 分析(harness 会话内) → 变更提案 → 大屏人审 → L2 配置 version+1 生效 → hub 确定性执行(不变)。**proposals 队列是唯一进化入口**：直接改 L2 配置（`content-hub/docs/strategies/*.json` 策略库、`content-hub/docs/knowledge/*.json` 知识包）不经提案人审不生效。四条回路：
+
+| 回路 | 内容 | 触发词 / 命令 |
+| --- | --- | --- |
+| ① 文案策略 | `strategies/<platform>.json` 版本化 + 周分析提案 | 「生成策略报告」→ `hub proposal add --kind strategy` → 大屏 approve |
+| ② 知识包自愈 | 失败现场 dom_snapshot → AI 字段级选择器提案 → 云端热更 | 「修复 <platform> 适配器」→ `hub proposal add --kind knowledge --basis ...` |
+| ③ 互动目标 | 策略库 engage 段（反馈采集本期占位） | `hub engage feedback <id>`（占位） |
+| ④ 配额收紧 | `quota_override` 只收紧，clamp 在 hub 代码强制 | 风控频发时 `hub proposal add --kind quota`（上调直接拒绝） |
+
+相关命令：`hub strategy show|history`、`hub proposal add|list|approve|reject`、`hub knowledge sync|push|status`。云端热更端点：`GET/PUT /v1/knowledge`（乐观锁，冲突 409）。
 
 ## 已知边界（如实标注）
 
 - ego 浏览器执行无法容器化（GUI + 本机登录态）：容器 backend 的排期/审核/大屏全功能可用，ego 动作如实报未配置；日常运营走本机模式。
 - 7 平台知识包选择器为 v1 初始版，待真机实测回填（`content-hub/docs/RECIPES-bili.md` 有首验清单）。
 - 后端基线 Node 22（规格表写 Node 20）：零依赖 SQLite（node:sqlite）需 ≥22.5，为保持零依赖升级基线。
+- 自进化：策略库云端分发为 v1 规划（当前 git/本机分发，规格允许多机后升云端）；知识包云端热更已可用（`hub knowledge sync`）；容器模式下知识包/策略目录随镜像，approve 写入在容器层（重建镜像前需先同步归档）——日常运营本机模式不受影响。

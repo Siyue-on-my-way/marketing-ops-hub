@@ -8,6 +8,7 @@ import { nowIso, jitter, localDate, inActiveHours, newId, sleep, parseLocal } fr
 import { writeRoundScript, runEgo, egoExe } from './ego.mjs';
 import { adapterPath, knowledgePath, hasAdapter } from './adapters/registry.mjs';
 import * as cloud from './cloud-client.mjs';
+import * as evolution from './evolution.mjs';
 
 // ---------- 基础 ----------
 
@@ -44,10 +45,14 @@ export function usedToday(db, accountId, kind) {
 }
 
 /**
- * 配额计算（红线 7/10）：
+ * 配额计算（红线 7/10 + 自进化回路④）：
  * - cold（冷启动 14 天内）：post=0（不发布），互动配额减半；
  * - paused/banned_watch：全 0；
- * - active：基础配额 × trust_score（逼近 1 才逐步放开）。
+ * - active：基础配额 × trust_score（逼近 1 才逐步放开）；
+ * - 回路④（EVOLUTION-SPEC §4.4）：quota_override 存在时按键覆盖生效值，
+ *   **clamp 在本函数代码强制 ≤ 基线**——即使 DB 被改出超基线的 override 也无效。
+ *   优先级：cold 规则 > quota_override（≤基线 clamp）> 基线×trust；放宽方向在提案层已拒绝，
+ *   这里是最后一道确定性闸门（提示词不是安全边界）。
  */
 export function quotaOf(account, cfg) {
   const base = JSON.parse(account.daily_quota || '{}');
@@ -61,7 +66,16 @@ export function quotaOf(account, cfg) {
   }
   const b = fill(base);
   const f = Math.min(1, Math.max(0.25, account.trust_score ?? 0.5));
-  return { post: Math.floor(b.post * f), like: Math.floor(b.like * f), comment: Math.floor(b.comment * f), dm: Math.floor(b.dm * f) };
+  const out = { post: Math.floor(b.post * f), like: Math.floor(b.like * f), comment: Math.floor(b.comment * f), dm: Math.floor(b.dm * f) };
+  let ov = null;
+  try { ov = account.quota_override ? JSON.parse(account.quota_override) : null; } catch { ov = null; }
+  if (ov && typeof ov === 'object') {
+    for (const k of ['post', 'like', 'comment', 'dm']) {
+      const v = ov[k];
+      if (Number.isInteger(v) && v >= 0) out[k] = Math.min(v, b[k]); // 回路④ clamp：≤ 基线，代码强制
+    }
+  }
+  return out;
 }
 
 /** 冷启动到期检查：14 天且 trust≥0.8 → active（红线 10） */
@@ -93,6 +107,8 @@ function markSkipped(db, postId, reason, detail) {
   db.prepare(`UPDATE posts SET status='skipped', error=? WHERE id=?`).run(`${reason}: ${detail}`.slice(0, 500), postId);
 }
 
+function safeParse(s) { try { return JSON.parse(s); } catch { return null; } }
+
 // ---------- 账号 ----------
 
 export function accountsList(db, cfg) {
@@ -107,6 +123,7 @@ export function accountsList(db, cfg) {
       id: a.id, platform: a.platform, display_name: a.display_name, ego_space_id: a.ego_space_id,
       owner_device: a.owner_device, status: a.status, trust_score: a.trust_score, risk_events: a.risk_events,
       auto_publish: !!a.auto_publish,
+      quota_override: a.quota_override ? safeParse(a.quota_override) : null, // 回路④：账号级收紧覆盖（≤基线 clamp 见 quotaOf）
       quota: q, used: { post: usedToday(db, a.id, 'post'), like: usedToday(db, a.id, 'like'), comment: usedToday(db, a.id, 'comment'), dm: usedToday(db, a.id, 'dm') },
       cold_days_left: coldDays,
       login: login ? { ok: login.ok, displayName: login.displayName, checked_at: login.checked_at } : { ok: null, note: '未预检' },
@@ -346,7 +363,8 @@ export async function run(db, cfg, { due = false } = {}) {
           out.push({ post_id: postId, skipped: 'risk(auto_submit)' });
         } else {
           db.prepare(`UPDATE posts SET status='failed', error=? WHERE id=?`).run(('auto_submit: ' + sr.error).slice(0, 500), postId);
-          audit(db, acct.id, 'auto_submit_failed', { post_id: postId, error: sr.error }, { shot: sr.shot });
+          // 回路②失败现场采集（§4.2）：round-runtime catch 已补采页面 innerText 前 4000 字
+          audit(db, acct.id, 'auto_submit_failed', { post_id: postId, error: sr.error, dom_snapshot: sr.dom_snapshot || null }, { shot: sr.shot });
           out.push({ post_id: postId, failed: 'auto_submit: ' + sr.error });
         }
       } else {
@@ -361,7 +379,8 @@ export async function run(db, cfg, { due = false } = {}) {
       out.push({ post_id: postId, skipped: 'no_login(timeout)' });
     } else {
       db.prepare(`UPDATE posts SET status='failed', error=? WHERE id=?`).run(String(r.error).slice(0, 500), postId);
-      audit(db, acct.id, 'fill_failed', { post_id: postId, error: r.error }, { shot: r.shot });
+      // 回路②失败现场采集（§4.2）：dom_snapshot 供「修复 <platform> 适配器」AI 分析用
+      audit(db, acct.id, 'fill_failed', { post_id: postId, error: r.error, dom_snapshot: r.dom_snapshot || null }, { shot: r.shot });
       out.push({ post_id: postId, failed: r.error });
     }
   }
@@ -398,6 +417,8 @@ export async function confirm(db, cfg, postId) {
   }
   const verr = (r.data && r.data.error) || r.error || '未知';
   db.prepare(`UPDATE posts SET error=? WHERE id=?`).run(('verify 未通过: ' + verr).slice(0, 500), postId);
+  // 回路②失败现场采集：verify 失败同样留 dom_snapshot（AI 读现场提字段级选择器提案）
+  audit(db, acct.id, 'verify_failed', { post_id: postId, error: verr, dom_snapshot: r.dom_snapshot || null }, { shot: r.shot });
   return { ok: false, error: 'VERIFY_FAILED: ' + verr, hint: '已标记 published；平台可能在审核中，稍后重跑 hub confirm ' + postId };
 }
 
@@ -635,8 +656,15 @@ export async function daemonOnce(db, cfg) {
   const collected = await collectDueMetrics(db, cfg);
   const flushed = await cloud.flushOutbox(db, cfg, workspaceKey());
   trustDailyTick(db);
+  // 回路②：知识包热更 sync——hub 启动/daemon 每 30 分钟（§4.2）；云不可达降级为记录，不影响主流程
+  let knowledge_sync = null;
+  const lastSync = Date.parse(kvGet(db, 'knowledge_sync_last') || 0) || 0;
+  if (Date.now() - lastSync > 30 * 60 * 1000) {
+    kvSet(db, 'knowledge_sync_last', nowIso());
+    try { knowledge_sync = await evolution.knowledgeSync(db, cfg, {}); } catch (e) { knowledge_sync = { ok: false, error: String(e) }; }
+  }
   kvSet(db, 'daemon_heartbeat', nowIso());
-  return { posts: posts.processed, engaged, collected, flushed };
+  return { posts: posts.processed, engaged, collected, flushed, knowledge_sync };
 }
 
 export async function daemonLoop(db, cfg, tickMs = 30000) {

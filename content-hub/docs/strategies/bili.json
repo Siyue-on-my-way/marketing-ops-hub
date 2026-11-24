@@ -1,0 +1,20 @@
+{
+  "platform": "bili",
+  "version": 1,
+  "updated_at": "2026-11-24T03:28:55.338Z",
+  "source": "initial",
+  "title_patterns": [],
+  "tag_patterns": [],
+  "timing": {
+    "best_hours": [],
+    "evidence": "待周分析回填：metrics day1 views 按发布小时分组对比"
+  },
+  "engage": {
+    "target_traits": [],
+    "note": "回路③：养号巡检选目标时消费本段；目标页反馈采集本期为占位（规格 §4.3）"
+  },
+  "notes": [
+    "初始空策略（Bilibili）：由 harness「生成策略报告」读 metrics/审计 → 产出提案 → 大屏人审 → hub 写入 version+1。",
+    "proposals 是唯一进化入口：直接改本文件不经提案人审不生效（EVOLUTION-SPEC 铁律）。"
+  ]
+}

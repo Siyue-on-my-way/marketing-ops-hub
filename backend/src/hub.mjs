@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 // hub.mjs — 本地中控 CLI（规格 §4.2 命令表）。skill 只通过这些命令驱动 hub。
 // 所有命令输出 JSON（skill 消费）；不向 stdout 打印非 JSON 的过程信息。
+import { existsSync, readFileSync } from 'node:fs';
 import { openDb, kvGet } from './db.mjs';
 import { loadConfig } from './config.mjs';
 import { nowIso } from './util.mjs';
 import * as planner from './planner.mjs';
+import * as evolution from './evolution.mjs';
 import { startServer } from './server.mjs';
 
 const cfg = loadConfig();
@@ -24,6 +26,11 @@ function usage() {
       'node src/hub.mjs interact <account_id> --plan <plan.json>',
       'node src/hub.mjs approve <engagement_id | batch:today>   |   reject <engagement_id>',
       'node src/hub.mjs health | review <post_id> [days] | doctor',
+      // 自进化（EVOLUTION-SPEC）：proposals 是唯一进化入口；策略库/知识包只经人审 approve 后由 hub 落地
+      'node src/hub.mjs strategy show <platform> | history <platform>',
+      'node src/hub.mjs proposal add --kind strategy|knowledge|quota|engage --platform <p> [--account <id>] --payload-file <f> [--basis dom_snapshot|screenshot] | list [status] | approve <id> | reject <id>',
+      'node src/hub.mjs knowledge sync [--platform <p>] | push <platform> | status',
+      'node src/hub.mjs engage feedback <engagement_id>   # 回路③反馈采集（本期占位）',
       'node src/hub.mjs daemon | web | serve',
     ],
   });
@@ -106,6 +113,59 @@ async function main() {
     }
     case 'doctor':
       return print(planner.doctor(db, cfg));
+    // ---------- 自进化（EVOLUTION-SPEC）：proposals 唯一进化入口 ----------
+    case 'strategy': {
+      if (sub === 'show') {
+        if (!rest[0]) return usage();
+        return print(evolution.strategyShow(cfg, rest[0]));
+      }
+      if (sub === 'history') {
+        if (!rest[0]) return usage();
+        return print(evolution.strategyHistory(cfg, rest[0]));
+      }
+      return usage();
+    }
+    case 'proposal': {
+      if (sub === 'add') {
+        const pf = argFlag('payload-file');
+        if (!pf || !existsSync(pf)) return print({ ok: false, error: '必须提供 --payload-file <提案 JSON>' });
+        let payload;
+        try { payload = JSON.parse(readFileSync(pf, 'utf8')); } catch (e) { return print({ ok: false, error: 'payload-file 解析失败: ' + e.message }); }
+        return print(evolution.proposalAdd(db, cfg, {
+          kind: argFlag('kind'),
+          platform: argFlag('platform'),
+          accountId: argFlag('account'),
+          payload,
+          basis: argFlag('basis'),
+        }));
+      }
+      if (sub === 'list') return print(evolution.proposalList(db, cfg, rest[0]));
+      if (sub === 'approve') {
+        if (!rest[0]) return usage();
+        return print(await evolution.proposalApprove(db, cfg, rest[0]));
+      }
+      if (sub === 'reject') {
+        if (!rest[0]) return usage();
+        return print(evolution.proposalReject(db, cfg, rest[0]));
+      }
+      return usage();
+    }
+    case 'knowledge': {
+      if (sub === 'sync') return print(await evolution.knowledgeSync(db, cfg, { platform: argFlag('platform') }));
+      if (sub === 'push') {
+        if (!rest[0]) return usage();
+        return print(await evolution.knowledgePush(db, cfg, rest[0]));
+      }
+      if (sub === 'status') return print(evolution.knowledgeStatus(db, cfg));
+      return usage();
+    }
+    case 'engage': {
+      if (sub === 'feedback') {
+        if (!rest[0]) return usage();
+        return print(await evolution.collectEngagementFeedback(db, cfg, rest[0]));
+      }
+      return usage();
+    }
     case 'daemon':
       await planner.daemonLoop(db, cfg);
       return;

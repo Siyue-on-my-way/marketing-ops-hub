@@ -52,6 +52,7 @@
 </header>
 <nav>
   <button data-tab="queue" class="active">待审队列</button>
+  <button data-tab="proposals">进化提案</button>
   <button data-tab="calendar">排期日历</button>
   <button data-tab="health">账号健康</button>
   <button data-tab="audit">审计时间线</button>
@@ -96,9 +97,41 @@ function render() {
   const tab = $('.nav-active, nav button.active')?.dataset.tab || 'queue';
   const main = $('#main');
   if (tab === 'queue') renderQueue(main);
+  else if (tab === 'proposals') renderProposals(main);
   else if (tab === 'calendar') renderCalendar(main);
   else if (tab === 'health') renderHealth(main);
   else renderAudit(main);
+}
+
+// 自进化提案人审（EVOLUTION-SPEC §2：AI 有提案权，人有一票否决权，approve 后 hub 才写 L2 配置）
+function renderProposals(main) {
+  const ps = STATE.proposals || [];
+  const drafted = ps.filter((p) => p.status === 'drafted');
+  const decided = ps.filter((p) => p.status !== 'drafted');
+  let html = '<div class="panel"><h2>进化提案待审（策略库 / 知识包自愈 / 配额收紧——approve 后 hub 才写 L2 配置，version+1 生效）</h2>';
+  if (!drafted.length) html += '<div class="empty">暂无待审提案（AI 周分析「生成策略报告」/「修复平台适配器」后产生）</div>';
+  for (const p of drafted) {
+    html += `<div class="card" style="margin-bottom:10px">
+      <div class="row" style="justify-content:space-between;align-items:center">
+        <div class="t">[${esc(p.kind)}${p.platform ? '·' + esc(p.platform) : ''}] ${esc((p.payload && p.payload.summary) || '')} <span class="badge filled">${esc(p.status)}</span></div>
+        <div>
+          <button class="act" onclick="approveProposal('${esc(p.id)}')">approve（生效）</button>
+          <button class="act danger" onclick="rejectProposal('${esc(p.id)}')">reject</button>
+        </div>
+      </div>
+      <div class="meta">提案 ${esc(p.id)} · ${esc(p.created_at || '')}${p.basis ? ' · 依据 ' + esc(p.basis) : ''}${p.account_id ? ' · 账号 ' + esc(p.account_id) : ''}</div>
+      <pre class="payload">${esc(JSON.stringify(p.payload, null, 2))}</pre>
+    </div>`;
+  }
+  html += '</div>';
+  if (decided.length) {
+    html += '<div class="panel"><h2>已裁决提案（留档：applied_version 可回溯，回滚=用 versions/ 归档覆盖）</h2><table><tr><th>提案</th><th>类型</th><th>平台/账号</th><th>状态</th><th>生效版本</th><th>裁决时间</th></tr>';
+    for (const p of decided) {
+      html += `<tr><td class="meta">${esc(p.id)}</td><td><span class="badge">${esc(p.kind)}</span></td><td class="meta">${esc(p.platform || p.account_id || '')}</td><td><span class="badge ${p.status === 'approved' ? 'confirmed' : ''}">${esc(p.status)}</span></td><td class="meta">${esc(p.applied_version == null ? '—' : 'v' + p.applied_version)}</td><td class="meta">${esc((p.decided_at || '').replace('T', ' ').slice(0, 19))}</td></tr>`;
+    }
+    html += '</table></div>';
+  }
+  main.innerHTML = html;
 }
 
 function renderQueue(main) {
@@ -187,6 +220,13 @@ async function confirmPost(id) {
 }
 async function approveEng(id) { await api('/api/engagements/' + id + '/approve', { method: 'POST' }); toast('已批准，守护进程将按拟人节奏执行'); refresh(); }
 async function rejectEng(id) { await api('/api/engagements/' + id + '/reject', { method: 'POST' }); toast('已拒绝'); refresh(); }
+async function approveProposal(id) {
+  if (!confirm('批准该进化提案？approve 后 hub 写入 L2 配置（version+1 生效，旧版归档可回滚）。')) return;
+  const r = await api('/api/proposals/' + id + '/approve', { method: 'POST' });
+  toast(r.ok ? '已生效：' + (r.note || '') : '未生效：' + (r.error || ''), r.ok);
+  refresh();
+}
+async function rejectProposal(id) { await api('/api/proposals/' + id + '/reject', { method: 'POST' }); toast('已拒绝（进化产物未落地）'); refresh(); }
 async function approveBatch() {
   if (!confirm('批准今日全部草拟互动？（红线 8 允许，但请确认每条都过目了）')) return;
   const r = await api('/api/engagements/approve-batch', { method: 'POST' });

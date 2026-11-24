@@ -6,6 +6,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { join, extname, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as planner from './planner.mjs';
+import * as evolution from './evolution.mjs';
 import { nowIso } from './util.mjs';
 
 const VERSION = '0.1.0';
@@ -60,6 +61,11 @@ export function startServer(db, cfg) {
       if ((m = p.match(/^\/api\/posts\/([^/]+)\/review$/))) {
         return sendJson(res, 200, planner.review(db, cfg, m[1]));
       }
+      // 自进化提案人审闸门（EVOLUTION-SPEC §2：大屏批量过目 approve/reject）
+      if ((m = p.match(/^\/api\/proposals\/([^/]+)\/(approve|reject)$/)) && req.method === 'POST') {
+        const r = m[2] === 'approve' ? await evolution.proposalApprove(db, cfg, m[1]) : evolution.proposalReject(db, cfg, m[1]);
+        return sendJson(res, r.ok ? 200 : (r.code === 409 ? 409 : 409), r);
+      }
       if (p === '/' || p === '/index.html') {
         const html = readFileSync(join(STATIC_DIR, 'index.html'));
         res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
@@ -92,7 +98,14 @@ function state(db, cfg) {
      ORDER BY p.scheduled_at DESC LIMIT 100`
   ).all();
   const auditRows = db.prepare(`SELECT ts, account_id, action, detail, shot FROM audit_log ORDER BY id DESC LIMIT 50`).all();
-  return { ok: true, now: nowIso(), accounts, queue: { posts: queuePosts, engagements: queueEng }, calendar, audit: auditRows };
+  // 自进化提案队列（人审闸门）：drafted 待审在前，最近已裁决的留档展示
+  const proposals = db.prepare(`SELECT * FROM proposals ORDER BY (status='drafted') DESC, rowid DESC LIMIT 50`).all()
+    .map((r) => ({
+      id: r.id, kind: r.kind, platform: r.platform, account_id: r.account_id, basis: r.basis,
+      status: r.status, created_at: r.created_at, decided_at: r.decided_at, applied_version: r.applied_version,
+      payload: safeJson(r.payload),
+    }));
+  return { ok: true, now: nowIso(), accounts, queue: { posts: queuePosts, engagements: queueEng }, calendar, audit: auditRows, proposals };
 }
 
 function safeJson(s) {

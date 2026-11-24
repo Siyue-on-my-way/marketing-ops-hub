@@ -1,7 +1,7 @@
 // smoke.mjs — 全链路冒烟测试（不需要真机 ego/平台，全部 mock 级验证）。
 // 覆盖：DDL/账号/冷启动配额/防重/plan→run→confirm 状态机/风控停机/no_login/互动全流程/
 //       trust_score/复盘对比/云 API 全套/大屏/round-runtime+适配器纪律（坑位2+红线1）。
-import { mkdtempSync, writeFileSync, rmSync, chmodSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, rmSync, chmodSync, mkdirSync, copyFileSync, existsSync, readFileSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
@@ -330,7 +330,251 @@ console.log = origLog;
 check('collect 读到指标', captured && captured.ok && captured.data.metrics && captured.data.metrics.views === 1000, JSON.stringify(captured && captured.data));
 uninstallMockEgo();
 
-// ---------- 11. 清理 ----------
+// ---------- 11. 自进化 E1：策略库 + 提案闭环（回路①，EVOLUTION-SPEC §4.1） ----------
+console.log('\n[11] E1 回路①：strategies 提案 → 人审 → version+1 → 消费');
+{
+  // 测试用临时 L2 目录（不污染仓库内文件）；初始策略文件以仓库版为种子
+  const stratDir = join(tmp, 'strategies');
+  const knowDir = join(tmp, 'knowledge');
+  mkdirSync(stratDir, { recursive: true });
+  mkdirSync(knowDir, { recursive: true });
+  for (const p of ['xhs', 'douyin', 'tiktok', 'yt', 'bili', 'x', 'xianyu']) {
+    copyFileSync(join(ROOT, 'content-hub', 'docs', 'strategies', p + '.json'), join(stratDir, p + '.json'));
+    copyFileSync(join(ROOT, 'content-hub', 'docs', 'knowledge', p + '.json'), join(knowDir, p + '.json'));
+  }
+  cfg.paths.strategies = stratDir;
+  cfg.paths.knowledge = knowDir;
+
+  const evo = await import(join(ROOT, 'backend', 'src', 'evolution.mjs'));
+  let s = evo.strategyShow(cfg, 'bili');
+  check('strategy show 初始 v1（含 engage 段）', s.ok && s.strategy.version === 1 && s.strategy.engage && Array.isArray(s.strategy.engage.target_traits), JSON.stringify(s).slice(0, 120));
+
+  // 证据缺失 → 拒绝入库（§4.1：每条模式带 evidence）
+  const noEv = await evo.proposalAdd(db, cfg, { kind: 'strategy', platform: 'bili', payload: { current_version: 1, proposed: { version: 1 }, evidence: [] } });
+  check('无 evidence 策略提案拒绝入库', !noEv.ok && String(noEv.error).includes('evidence'), JSON.stringify(noEv));
+
+  // 乐观锁：基于旧版本的提案 → 拒绝（直接改配置/过期分析不能溜进队列）
+  const stale = await evo.proposalAdd(db, cfg, {
+    kind: 'strategy', platform: 'bili',
+    payload: { summary: '基于旧版', current_version: 0, proposed: { title_patterns: [{ pattern: '过期提案', confidence: 0.1 }] }, evidence: [{ m: 'x' }] },
+  });
+  check('乐观锁：基于 v0 的提案被拒（当前 v1）', !stale.ok && String(stale.error).includes('BASE_VERSION_CONFLICT'), JSON.stringify(stale));
+
+  // 正常提案：8 条假 metrics 的周分析产物（此处直接构造提案 diff）
+  const cur = evo.strategyShow(cfg, 'bili').strategy;
+  const proposed = JSON.parse(JSON.stringify(cur));
+  proposed.title_patterns = [{ pattern: '疑问句式标题', evidence: { avg_views_ratio: 1.8, samples: ['p-1', 'p-2'] }, confidence: 0.6 }];
+  proposed.tag_patterns = [{ pattern: '教程类标签', evidence: { avg_likes_ratio: 1.4 }, confidence: 0.5 }];
+  proposed.timing = { best_hours: [20, 21], evidence: 'day1 views 按发布小时分组对比：20-21 点组均值 1.6×' };
+  const propFile = join(tmp, 'strat-proposal.json');
+  writeFileSync(propFile, JSON.stringify({ summary: '周分析 v1→v2：疑问式标题+20点档表现好', current_version: 1, proposed, evidence: [{ metric: 'day1_views', detail: '8 条样本分组对比' }] }));
+  r = await evo.proposalAdd(db, cfg, { kind: 'strategy', platform: 'bili', payload: JSON.parse(readFileSync(propFile, 'utf8')) });
+  check('策略提案入库 drafted', r.ok && r.status.includes('drafted'), JSON.stringify(r));
+  const propId = r.proposal_id;
+
+  let listed = evo.proposalList(db, cfg, 'drafted');
+  check('proposal list drafted 可见', listed.ok && listed.proposals.some((p) => p.id === propId), JSON.stringify(listed.proposals && listed.proposals.map((p) => p.id)));
+
+  const ap = await evo.proposalApprove(db, cfg, propId);
+  check('approve → 策略库 version=2', ap.ok && ap.version === 2, JSON.stringify(ap));
+  s = evo.strategyShow(cfg, 'bili');
+  check('策略文件已落地 v2 且 source=proposal', s.ok && s.strategy.version === 2 && String(s.strategy.source).startsWith('proposal:'), JSON.stringify({ v: s.strategy.version, src: s.strategy.source }));
+  check('改写依据可引用（title_patterns 生效）', s.ok && s.strategy.title_patterns.length === 1 && s.strategy.title_patterns[0].pattern === '疑问句式标题', JSON.stringify(s.strategy.title_patterns));
+  const hist = evo.strategyHistory(cfg, 'bili');
+  check('versions/ 归档存在（保留最近 10 版）', hist.ok && hist.versions.length === 1 && hist.versions[0].file.includes('-v1-'), JSON.stringify(hist.versions));
+
+  const dup = await evo.proposalApprove(db, cfg, propId);
+  check('重复 approve 拒绝（已裁决）', !dup.ok && String(dup.error).includes('仅 drafted'), JSON.stringify(dup));
+
+  // 演示「直接改配置不生效」：手工改文件不经提案 → 无归档、无审计、队列无记录
+  const tampered = JSON.parse(readFileSync(join(stratDir, 'bili.json'), 'utf8'));
+  tampered.title_patterns = [{ pattern: '绕过队列的伪造模式', confidence: 0.99 }];
+  writeFileSync(join(stratDir, 'bili.json'), JSON.stringify(tampered, null, 2));
+  const appliedRows = db.prepare(`SELECT applied_version, status FROM proposals WHERE kind IN ('strategy','engage') AND status='approved'`).all();
+  const appliedBefore = appliedRows.length;
+  const auditsBefore = db.prepare(`SELECT COUNT(*) n FROM audit_log WHERE action='proposal_applied'`).get().n;
+  check('直接改配置：hub 进化书账无任何变化（只认提案→人审路径）',
+    db.prepare(`SELECT COUNT(*) n FROM audit_log WHERE action='proposal_applied'`).get().n === auditsBefore
+    && db.prepare(`SELECT COUNT(*) n FROM proposals WHERE status='approved'`).get().n === appliedBefore
+    && appliedRows.every((x) => x.applied_version === 2), JSON.stringify(appliedRows));
+  // 恢复 v2 内容（模拟操作者用归档回滚伪造改动——回滚路径可用）
+  const rollback = JSON.parse(readFileSync(join(stratDir, 'versions', hist.versions[0].file.replace(/^.*[\\/]/, '')), 'utf8'));
+  check('回滚材料可读（versions 归档内容完整）', rollback && rollback.version === 1 && rollback.platform === 'bili', JSON.stringify({ v: rollback.version }));
+}
+
+// ---------- 12. 自进化 E2：知识包自愈 + 云端热更（回路②，EVOLUTION-SPEC §4.2） ----------
+console.log('\n[12] E2 回路②：失败现场 dom_snapshot → 字段级提案 → 人审 → 云端热更 sync');
+{
+  const evo = await import(join(ROOT, 'backend', 'src', 'evolution.mjs'));
+  const H = { authorization: 'Bearer testkey-123' };
+
+  // 12a. 失败现场采集：round-runtime catch 分支补采 dom_snapshot
+  const throwAdapter = join(tmp, 'throw-adapter.mjs');
+  writeFileSync(throwAdapter, 'export default { async fill() { throw new Error("BOOM: 模拟页面结构变化"); } };\n');
+  const { createMockPage: mkPage2, installMockEgo: installEgo2, uninstallMockEgo: uninstallEgo2 } = await import(join(ROOT, 'test', 'mock-page.mjs'));
+  const pg2 = mkPage2({ innerText: '页面结构变化后的 innerText 现场内容 新版标题输入框按钮' }); // 注意：不含风控关键词，否则 preflight 前置拦截走不到 catch
+  installEgo2(pg2);
+  const rt2 = await import(join(ROOT, 'backend', 'src', 'ego', 'round-runtime.mjs'));
+  const P2 = {
+    action: 'fill-bili-selfheal', op: 'fill',
+    account: { id: 'a-heal', ego_space_id: 'mt-bili-a-heal', display_name: '测试昵称', platform: 'bili' },
+    params: { payload: { title: 't', text: 'x', tags: [] } },
+    paths: { knowledge: join(cfg.paths.knowledge, 'bili.json'), adapter: throwAdapter, shotDir: join(tmp, 'shots3'), shotName: 'heal-test' },
+  };
+  let cap2 = null;
+  const olog = console.log;
+  console.log = (line) => { if (String(line).startsWith('@@RESULT@@')) cap2 = JSON.parse(String(line).slice(10)); };
+  await rt2.run(P2);
+  console.log = olog;
+  check('失败现场：catch 补采 dom_snapshot（innerText 前 4000 字）', cap2 && cap2.ok === false && !!cap2.dom_snapshot && cap2.dom_snapshot.includes('新版标题输入框'), JSON.stringify({ snap: cap2 && (cap2.dom_snapshot || '').slice(0, 40) }));
+  uninstallEgo2();
+
+  // 12b. 云端知识包端点：404 → PUT 建版 → 409 乐观锁 → 400 版本不连续
+  let res = await fetch(`${CLOUD}/v1/knowledge?platform=x`, { headers: H });
+  check('云端知识包初始 404', res.status === 404, String(res.status));
+  const xLocal = JSON.parse(readFileSync(join(cfg.paths.knowledge, 'x.json'), 'utf8'));
+  res = await fetch(`${CLOUD}/v1/knowledge/x`, { method: 'PUT', headers: H, body: JSON.stringify({ json: xLocal, base_version: 0 }) });
+  check('云端 PUT 首版（base 0 → v1）', res.ok && (await res.json()).version === 1, String(res.status));
+  res = await fetch(`${CLOUD}/v1/knowledge/x`, { method: 'PUT', headers: H, body: JSON.stringify({ json: xLocal, base_version: 0 }) });
+  check('乐观锁：base_version 过期 → 409', res.status === 409, String(res.status));
+  res = await fetch(`${CLOUD}/v1/knowledge/x`, { method: 'PUT', headers: H, body: JSON.stringify({ json: { ...xLocal, version: 5 }, base_version: 1 }) });
+  check('版本不连续 → 400', res.status === 400, String(res.status));
+
+  // 12c. sync：云端 v1 = 本地 v1 → up_to_date；云端推 v2 → sync 拉取（先归档再覆盖）
+  let sync = await evo.knowledgeSync(db, cfg, { platform: 'x' });
+  check('sync：版本一致 up_to_date', sync.ok && sync.report[0].action === 'up_to_date', JSON.stringify(sync.report));
+  const xV2 = JSON.parse(JSON.stringify(xLocal)); xV2.version = 2; xV2.updated_at = new Date().toISOString();
+  xV2.pages.publish.title_sel = '.cloud-fixed-title-input'; // 另一台设备经人审修复的选择器
+  res = await fetch(`${CLOUD}/v1/knowledge/x`, { method: 'PUT', headers: H, body: JSON.stringify({ json: xV2, base_version: 1 }) });
+  check('云端推进到 v2', res.ok, String(res.status));
+  sync = await evo.knowledgeSync(db, cfg, { platform: 'x' });
+  const xAfter = JSON.parse(readFileSync(join(cfg.paths.knowledge, 'x.json'), 'utf8'));
+  check('sync：云端>本地 → 拉取覆盖（本地归档不静默丢失）', sync.ok && sync.report[0].action === 'pulled' && xAfter.version === 2, JSON.stringify(sync.report));
+  const xVersionsDir = join(cfg.paths.knowledge, 'versions');
+  check('sync 归档可回溯（versions/ 有 x 归档文件）', existsSync(xVersionsDir) && readdirSync(xVersionsDir).some((f) => f.startsWith('x-v1-')), JSON.stringify(readdirSync(xVersionsDir)));
+
+  // 12d. 提案校验：无 basis 拒绝入库；流程级（steps/cadence）拒绝；字段级放行
+  const kpFile = join(tmp, 'know-proposal.json');
+  const noBasis = await evo.proposalAdd(db, cfg, { kind: 'knowledge', platform: 'bili', payload: { base_version: 1, changes: [{ path: 'pages.publish.title_sel', value: '.a' }] } });
+  check('无依据（basis）提案直接拒绝入库', !noBasis.ok && String(noBasis.error).includes('basis'), JSON.stringify(noBasis));
+  writeFileSync(kpFile, JSON.stringify({ base_version: 1, changes: [{ path: 'pages.publish.steps', value: ['改流程'] }] }));
+  let bad = await evo.proposalAdd(db, cfg, { kind: 'knowledge', platform: 'bili', payload: JSON.parse(readFileSync(kpFile, 'utf8')), basis: 'dom_snapshot' });
+  check('steps 流程级修改拒绝（禁改流程）', !bad.ok && String(bad.error).includes('字段级'), JSON.stringify(bad));
+  writeFileSync(kpFile, JSON.stringify({ base_version: 1, changes: [{ path: 'cadence.post_gap_sec', value: [10, 20] }] }));
+  bad = await evo.proposalAdd(db, cfg, { kind: 'knowledge', platform: 'bili', payload: JSON.parse(readFileSync(kpFile, 'utf8')), basis: 'screenshot' });
+  check('cadence 修改拒绝（节奏走人工）', !bad.ok && String(bad.error).includes('字段级'), JSON.stringify(bad));
+  writeFileSync(kpFile, JSON.stringify({
+    summary: '修复 bili 标题输入框选择器（DOM 快照显示类名已更换）',
+    base_version: 1,
+    changes: [
+      { path: 'pages.publish.title_sel', value: '.bili-title-input-v2' },
+      { path: 'risk', value: ['验证码', 're:环境异常|安全验证|滑动验证|账号存在异常', 're:新风控文案'] },
+    ],
+  }));
+  r = await evo.proposalAdd(db, cfg, { kind: 'knowledge', platform: 'bili', payload: JSON.parse(readFileSync(kpFile, 'utf8')), basis: 'dom_snapshot' });
+  check('字段级提案（含 risk 更新）入库', r.ok, JSON.stringify(r));
+  const kpId = r.proposal_id;
+  const kap = await evo.proposalApprove(db, cfg, kpId);
+  const biliAfter = JSON.parse(readFileSync(join(cfg.paths.knowledge, 'bili.json'), 'utf8'));
+  check('approve → 本地知识包 version+1 且选择器落地', kap.ok && biliAfter.version === 2 && biliAfter.pages.publish.title_sel === '.bili-title-input-v2', JSON.stringify({ v: biliAfter.version }));
+  res = await fetch(`${CLOUD}/v1/knowledge?platform=bili`, { headers: H });
+  const cloudBili = await res.json();
+  check('云端热更：approve 自动推送，云可拉到 v2', cloudBili.ok && cloudBili.version === 2 && cloudBili.json.pages.publish.title_sel === '.bili-title-input-v2', JSON.stringify({ v: cloudBili.version }));
+  check('audit_log 留痕 proposal_applied（含云推送台账）', !!db.prepare(`SELECT 1 FROM audit_log WHERE action='proposal_applied' AND detail LIKE '%knowledge%'`).get(), '');
+  const biliKnowledgeArchives = readdirSync(join(cfg.paths.knowledge, 'versions')).filter((f) => f.startsWith('bili-v1-'));
+  check('知识包 versions 归档存在（bili v1 已归档）', biliKnowledgeArchives.length === 1, JSON.stringify(biliKnowledgeArchives));
+}
+
+// ---------- 13. 自进化 E4：配额收紧自适应（回路④，EVOLUTION-SPEC §4.4） ----------
+console.log('\n[13] E4 回路④：quota_override 只收紧，clamp 在 hub 代码强制');
+{
+  const evo = await import(join(ROOT, 'backend', 'src', 'evolution.mjs'));
+  const qFile = join(tmp, 'quota-proposal.json');
+
+  // 上调提案 → hub 代码直接拒绝入库（方向锁死，不靠提示词）
+  writeFileSync(qFile, JSON.stringify({ reason: '想让号多发一点', old: { like: 30 }, new: { like: 40 } }));
+  r = await evo.proposalAdd(db, cfg, { kind: 'quota', accountId: xhsId, payload: JSON.parse(readFileSync(qFile, 'utf8')) });
+  check('上调提案 → DIRECTION_REJECTED 拒绝入库', !r.ok && String(r.error).includes('DIRECTION_REJECTED'), JSON.stringify(r));
+
+  // 冷启动账号不接受配额提案（红线 10 管辖，不进进化回路）
+  const coldAcct = planner.accountsAdd(db, cfg, 'douyin', '冷号');
+  writeFileSync(qFile, JSON.stringify({ reason: 'x', old: { like: 10 }, new: { like: 5 } }));
+  r = await evo.proposalAdd(db, cfg, { kind: 'quota', accountId: coldAcct.account.id, payload: JSON.parse(readFileSync(qFile, 'utf8')) });
+  check('冷启动账号配额提案拒绝（红线不进回路）', !r.ok && String(r.error).includes('红线'), JSON.stringify(r));
+
+  // 正常收紧：like 30→20、comment 5→3（风控频发场景的 AI 提案产物）
+  writeFileSync(qFile, JSON.stringify({ reason: '该号近 7 天 2 次风控信号，建议下调互动', old: { like: 30, comment: 5 }, new: { like: 20, comment: 3 } }));
+  r = await evo.proposalAdd(db, cfg, { kind: 'quota', accountId: xhsId, payload: JSON.parse(readFileSync(qFile, 'utf8')) });
+  check('收紧提案入库', r.ok, JSON.stringify(r));
+  const qpId = r.proposal_id;
+  const qap = await evo.proposalApprove(db, cfg, qpId);
+  check('approve → quota_override 写入', qap.ok && qap.quota_override && qap.quota_override.like === 20 && qap.quota_override.comment === 3, JSON.stringify(qap));
+  const xhsRow = db.prepare('SELECT * FROM accounts WHERE id=?').get(xhsId);
+  const qEff = planner.quotaOf(xhsRow, cfg);
+  check('quotaOf：override 生效（like 20 / comment 3）', qEff.like === 20 && qEff.comment === 3, JSON.stringify(qEff));
+  check('quotaOf：未覆盖键仍按基线×trust', qEff.post === 10 && qEff.dm === 10, JSON.stringify(qEff));
+  const health = planner.health(db, cfg);
+  const hAcc = health.accounts.find((a) => a.id === xhsId);
+  check('hub health 显示 override 且生效值收紧', hAcc.quota_override && hAcc.quota_override.like === 20 && hAcc.quota.like === 20 && hAcc.quota.comment === 3, JSON.stringify({ ov: hAcc.quota_override, q: hAcc.quota }));
+
+  // 纵深防御：即使 DB 被直接改成超基线，quotaOf 仍 clamp ≤ 基线（代码强制，非提示词）
+  db.prepare('UPDATE accounts SET quota_override=? WHERE id=?').run('{"like":999,"post":99}', xhsId);
+  const qTampered = planner.quotaOf(db.prepare('SELECT * FROM accounts WHERE id=?').get(xhsId), cfg);
+  check('篡改 DB 超基线 → clamp 兜底（like≤30 post≤10）', qTampered.like === 30 && qTampered.post === 10, JSON.stringify(qTampered));
+  db.prepare('UPDATE accounts SET quota_override=? WHERE id=?').run(JSON.stringify({ like: 20, comment: 3 }), xhsId);
+  check('audit 留痕 quota_override_set', !!db.prepare(`SELECT 1 FROM audit_log WHERE action='quota_override_set' AND account_id=?`).get(xhsId), '');
+}
+
+// ---------- 14. 自进化 E3：engage 段 + 反馈采集占位（回路③，EVOLUTION-SPEC §4.3） ----------
+console.log('\n[14] E3 回路③：engage 策略段消费 + 反馈采集占位');
+{
+  const evo = await import(join(ROOT, 'backend', 'src', 'evolution.mjs'));
+  // engage 提案 → 人审 → 策略库 engage 段更新（流程同回路①）
+  const cur = evo.strategyShow(cfg, 'xhs').strategy;
+  const proposed = JSON.parse(JSON.stringify(cur));
+  proposed.engage = {
+    target_traits: [{ trait: '1w-10w粉 同领域号', evidence: { sample_size: 12, follow_back_rate: 0.25 }, confidence: 0.5 }],
+    note: '回路③：养号巡检选目标时消费本段',
+  };
+  r = await evo.proposalAdd(db, cfg, {
+    kind: 'engage', platform: 'xhs',
+    payload: { summary: '互动目标偏好 v1→v2', current_version: cur.version, proposed, evidence: [{ metric: 'follow_back', detail: '占位分析' }] },
+  });
+  check('engage 提案入库', r.ok, JSON.stringify(r));
+  const eap = await evo.proposalApprove(db, cfg, r.proposal_id);
+  const s2 = evo.strategyShow(cfg, 'xhs');
+  check('approve → engage 段落地（version+1）', eap.ok && s2.strategy.version === 2 && s2.strategy.engage.target_traits.length === 1, JSON.stringify({ v: s2.strategy && s2.strategy.version }));
+
+  // 反馈采集 = 占位实现（规格 §4.3：本期不做，不阻塞）
+  const fb = await evo.collectEngagementFeedback(db, cfg, 'nonexistent-id');
+  check('反馈采集：未知 id 报错', !fb.ok, JSON.stringify(fb));
+  const eng1 = db.prepare(`SELECT id FROM engagements WHERE kind='comment' LIMIT 1`).get();
+  const fb2 = await evo.collectEngagementFeedback(db, cfg, eng1.id);
+  check('反馈采集占位：implemented=false + 说明', fb2.ok && fb2.implemented === false && String(fb2.placeholder).includes('占位'), JSON.stringify(fb2));
+}
+
+// ---------- 15. 大屏提案区块 + API ----------
+console.log('\n[15] 大屏进化提案人审');
+{
+  const evo = await import(join(ROOT, 'backend', 'src', 'evolution.mjs'));
+  cfg.hub.port = 20000 + ((process.pid + 13) % 20000);
+  const srv2 = startServer(db, cfg);
+  await new Promise((res) => setTimeout(res, 300));
+  const st = await (await fetch(`http://127.0.0.1:${cfg.hub.port}/api/state`)).json();
+  check('/api/state 含 proposals 队列', st.ok && Array.isArray(st.proposals) && st.proposals.length >= 4, String(st.proposals && st.proposals.length));
+  const html2 = await (await fetch(`http://127.0.0.1:${cfg.hub.port}/`)).text();
+  check('大屏含进化提案区块', html2.includes('进化提案') && html2.includes('approveProposal'), '');
+  // 大屏 approve 一条待审提案（douyin 策略提案走全链路）
+  const cur = evo.strategyShow(cfg, 'douyin').strategy;
+  const proposed = JSON.parse(JSON.stringify(cur));
+  proposed.tag_patterns = [{ pattern: '热门 BGM 标签', evidence: { avg_views_ratio: 1.2 }, confidence: 0.4 }];
+  const add = await evo.proposalAdd(db, cfg, { kind: 'strategy', platform: 'douyin', payload: { summary: 'douyin 周分析', current_version: cur.version, proposed, evidence: [{ m: 1 }] } });
+  const pr = await (await fetch(`http://127.0.0.1:${cfg.hub.port}/api/proposals/${add.proposal_id}/approve`, { method: 'POST' })).json();
+  check('大屏 approve → 生效 v2', pr.ok && pr.version === 2, JSON.stringify(pr));
+  srv2.close();
+}
+
+// ---------- 16. 清理 ----------
 db.close();
 cloudProc.kill('SIGKILL');
 try { rmSync(tmp, { recursive: true, force: true }); } catch {}

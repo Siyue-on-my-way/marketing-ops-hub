@@ -3,7 +3,7 @@
 //           红线 7 拟人节奏与配额（quotaOf/间隔抖动/活跃时段）；红线 10 冷启动（quotaOf cold 分支）。
 import { existsSync, readFileSync } from 'node:fs';
 import { openDb, kvGet, kvSet } from './db.mjs';
-import { loadConfig, workspaceKey, PLATFORMS } from './config.mjs';
+import { loadConfig, workspaceKey, credentialsPath, PLATFORMS } from './config.mjs';
 import { nowIso, jitter, localDate, inActiveHours, newId, sleep, parseLocal } from './util.mjs';
 import { writeRoundScript, runEgo, egoExe } from './ego.mjs';
 import { adapterPath, knowledgePath, hasAdapter } from './adapters/registry.mjs';
@@ -575,7 +575,7 @@ export function review(db, cfg, postId, days = 7) {
   return { ok: true, post: { id: p.id, platform: p.platform, status: p.status, published_at: p.published_at, url: p.published_url }, card };
 }
 
-export function doctor(db, cfg) {
+export async function doctor(db, cfg) {
   const exe = egoExe(cfg);
   const ego = { configured: !!exe, path: exe || null, found: !!(exe && existsSync(exe)) };
   const key = workspaceKey();
@@ -587,11 +587,23 @@ export function doctor(db, cfg) {
   for (const a of db.prepare('SELECT DISTINCT platform FROM accounts').all()) {
     if (!hasAdapter(cfg, a.platform)) missingAdapters.push(a.platform);
   }
+  // 访问体系（ACCESS-SPEC v1.2）：凭证文件 + 云端 whoami 自检
+  const credPath = credentialsPath();
+  const credentials = { path: credPath, present: existsSync(credPath), source: key ? (existsSync(credPath) ? 'credentials.json' : 'env MAITIAN_WORKSPACE_KEY（建议迁移为门户密钥 + hub join）') : null };
+  let whoami = null;
+  if (key && cfg.cloud.base_url) {
+    try {
+      const r = await cloud.api(cfg, key, 'GET', '/v1/whoami');
+      whoami = r.ok ? { tenant_id: r.tenant_id, tenant_name: r.tenant_name, user: r.user, role: r.role, key_name: r.key_name } : { error: r.error };
+    } catch (e) { whoami = { error: String(e && e.message || e) }; }
+  }
   return {
     ok: true,
     ego,
     hub: { db: cfg.paths.db, port: cfg.hub.port },
     cloud: { configured: !!cfg.cloud.base_url, base_url: cfg.cloud.base_url, key_set: !!key },
+    credentials,
+    whoami,
     accounts,
     missing_adapters: missingAdapters,
     note: '登录态矩阵来自最近一次 preflight/login 快照缓存；run/confirm 会实时刷新',

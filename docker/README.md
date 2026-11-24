@@ -10,7 +10,9 @@ docker compose up -d --build
 docker compose ps       # 等 backend / maitian-cloud / frontend 均 healthy
 ```
 
-入口：`http://<host>:<GATEWAY_PORT>/?token=<SERVER_TOKEN>`（大屏；token 会被浏览器记住）。
+入口：
+- **用户门户** `http://<host>:<GATEWAY_PORT>/`（注册/登录 → 素材台 + 密钥管理 + 邀请成员）
+- 运营大屏 `http://<host>:<GATEWAY_PORT>/console/?token=<SERVER_TOKEN>`（hub 待审队列，管理员用；token 会被浏览器记住）。
 API 健康检查（免鉴权）：`curl http://<host>:<GATEWAY_PORT>/api/health` → `{"ok":true,"version":"0.1.0",...}`。
 
 ## 运维速查
@@ -37,7 +39,7 @@ docker compose up -d --build         # 改代码后重建
 | 变量 | 用途 |
 | --- | --- |
 | `SERVER_TOKEN` | 大屏/API 网关访问令牌（`X-Server-Token` 头或 `?token=`），重启不变 |
-| `MAITIAN_WORKSPACE_KEY` | 云素材库鉴权 key（hub 与 cloud 必须一致；轮换：`POST /v1/keys/rotate`，新旧 7 天双活） |
+| `MAITIAN_WORKSPACE_KEY` | legacy 引导 key（兼容旧设备；新用户走门户注册→密钥管理→`hub join`） |
 | `GATEWAY_PORT` | 唯一对外端口（默认 2380） |
 | `MAITIAN_CLOUD_URL` | hub 访问云素材库的地址 |
 

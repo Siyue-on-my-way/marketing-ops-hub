@@ -50,7 +50,23 @@ export function loadConfig() {
   return cfg;
 }
 
-export const workspaceKey = () => process.env.MAITIAN_WORKSPACE_KEY || '';
+// 云 API 凭证解析（ACCESS-SPEC v1.2）：credentials.json（hub join 写入，0600）优先，env MAITIAN_WORKSPACE_KEY 兜底
+export function workspaceKey() {
+  try {
+    const dataDir = process.env.MAITIAN_DATA_DIR || join(ROOT, 'data');
+    const credPath = join(dataDir, 'credentials.json');
+    if (existsSync(credPath)) {
+      const cred = JSON.parse(readFileSync(credPath, 'utf8'));
+      if (cred.api_key) return cred.api_key;
+    }
+  } catch { /* 凭证文件损坏则回退 env */ }
+  return process.env.MAITIAN_WORKSPACE_KEY || '';
+}
+
+export function credentialsPath() {
+  const dataDir = process.env.MAITIAN_DATA_DIR || join(ROOT, 'data');
+  return join(dataDir, 'credentials.json');
+}
 
 export const PLATFORMS = ['xhs', 'douyin', 'tiktok', 'yt', 'bili', 'x', 'xianyu'];
 export const PLATFORM_NAMES = {

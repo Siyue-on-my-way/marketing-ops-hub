@@ -262,6 +262,96 @@ try {
   check('云 API 流程异常', false, String(e));
 }
 
+// ---------- 8b. 用户门户（ACCESS-SPEC v1.2：注册/登录/租户隔离/密钥/邀请/成员） ----------
+console.log('\n[8b] 用户门户');
+try {
+  const jar = {}; // username -> cookie
+  const wapi = async (user, path, opts = {}) => {
+    const headers = { ...(opts.headers || {}) };
+    if (jar[user]) headers.cookie = jar[user];
+    if (opts.body && typeof opts.body !== 'string') { opts = { ...opts, body: JSON.stringify(opts.body) }; headers['content-type'] = 'application/json'; }
+    const res = await fetch(`${CLOUD}${path}`, { ...opts, headers });
+    const sc = res.headers.get('set-cookie');
+    if (sc && sc.includes('mt_session=')) jar[user] = sc.split(';')[0];
+    let j = {}; try { j = await res.json(); } catch {}
+    return { status: res.status, ...j };
+  };
+
+  // 注册：无邀请码 → 自建 workspace 为 owner，返回默认 api_key
+  let r = await wapi(null, '/webapi/register', { method: 'POST', body: { username: 'alice', password: 'alice-pass-123' } });
+  check('注册 alice（自建 workspace + 默认密钥）', r.ok && r.api_key && r.role === 'owner' && r.tenant_id, JSON.stringify(r).slice(0, 120));
+  const aliceKey = r.api_key, aliceTenant = r.tenant_id;
+  r = await wapi(null, '/webapi/register', { method: 'POST', body: { username: 'alice', password: 'alice-pass-123' } });
+  check('重复用户名拒绝', !r.ok && String(r.error).includes('已存在'));
+  r = await wapi(null, '/webapi/register', { method: 'POST', body: { username: 'bob', password: 'short' } });
+  check('弱密码拒绝', !r.ok && String(r.error).includes('8 位'));
+
+  // 登录 + cookie 会话
+  r = await wapi('alice', '/webapi/login', { method: 'POST', body: { username: 'alice', password: 'alice-pass-123' } });
+  check('登录发 cookie 会话', r.ok && !!jar.alice);
+  r = await wapi('alice', '/webapi/materials?limit=50');
+  check('alice 素材台可达', r.ok && Array.isArray(r.items));
+
+  // 租户隔离：legacy key 上传 → alice 看不到；alice key 上传 → alice 可见
+  const H = { authorization: 'Bearer testkey-123' };
+  const fdA = new FormData();
+  fdA.append('file', new Blob([Buffer.from('tenant-alice-bytes')]), 'a.bin');
+  fdA.append('meta', JSON.stringify({ title: 'Alice 的素材', type: 'image', platform_tags: ['common'] }));
+  let res = await fetch(`${CLOUD}/v1/materials`, { method: 'POST', headers: { authorization: 'Bearer ' + aliceKey }, body: fdA });
+  const aliceMat = (await res.json()).id;
+  check('alice 密钥上传素材', !!aliceMat);
+  res = await fetch(`${CLOUD}/v1/materials?limit=50`, { headers: H });
+  const legacyList = (await res.json()).items;
+  check('租户隔离：legacy 看不到 alice 的素材', !legacyList.some((i) => i.id === aliceMat));
+  r = await wapi('alice', '/webapi/materials?limit=50');
+  check('alice 看得到自己的素材', r.items.some((i) => i.id === aliceMat));
+  check('租户隔离：alice 看不到 legacy 的素材', !r.items.some((i) => i.title === '第一条素材'));
+
+  // 密钥管理：新建 → 新旧并存；吊销默认 → 默认 401、新 key 可用；吊销最后一把被拒
+  r = await wapi('alice', '/webapi/me/keys', { method: 'POST', body: { name: '服务器hub' } });
+  const newKey = r.api_key;
+  check('新建密钥（明文仅此一次）', !!newKey && Array.isArray(r.keys) && r.keys.length === 2);
+  res = await fetch(`${CLOUD}/v1/whoami`, { headers: { authorization: 'Bearer ' + newKey } });
+  check('新密钥 whoami', res.status === 200 && (await res.json()).user === 'alice');
+  const keysNow = (await wapi('alice', '/webapi/me/keys')).keys;
+  const defaultKey = keysNow.find((k) => k.name === '默认密钥');
+  r = await wapi('alice', '/webapi/me/keys/' + defaultKey.id, { method: 'DELETE', body: {} });
+  check('吊销默认密钥', r.ok);
+  res = await fetch(`${CLOUD}/v1/whoami`, { headers: { authorization: 'Bearer ' + aliceKey } });
+  check('被吊销密钥立即 401', res.status === 401);
+  r = await wapi('alice', '/webapi/me/keys/' + (await wapi('alice', '/webapi/me/keys')).keys.find((k) => k.revoked_at).id, { method: 'DELETE', body: {} });
+  check('重复吊销幂等', r.ok);
+
+  // 邀请链接：alice 邀请 bob 加入同一 workspace
+  r = await wapi('alice', '/webapi/me/invite');
+  check('生成邀请链接', r.ok && r.invite_code);
+  r = await wapi(null, '/webapi/register', { method: 'POST', body: { username: 'bob', password: 'bob-pass-12345', invite_code: r.invite_code } });
+  check('bob 持邀请码注册加入 alice workspace', r.ok && r.role === 'member' && r.tenant_id === aliceTenant, JSON.stringify({ t: r.tenant_id, at: aliceTenant }));
+  const bobKey = r.api_key;
+  r = await wapi('bob', '/webapi/login', { method: 'POST', body: { username: 'bob', password: 'bob-pass-12345' } });
+  check('bob 登录获得会话', r.ok && !!jar.bob);
+  r = await wapi('bob', '/webapi/materials?limit=50');
+  check('bob 看得到 workspace 内素材', r.ok && r.items.some((i) => i.id === aliceMat));
+  r = await wapi('alice', '/webapi/members');
+  check('成员列表含 alice/bob', r.members.length === 2);
+  const bobId = r.members.find((x) => x.username === 'bob').id;
+  r = await wapi('alice', '/webapi/members/' + bobId, { method: 'DELETE', body: {} });
+  check('owner 移除成员', r.ok);
+  res = await fetch(`${CLOUD}/v1/whoami`, { headers: { authorization: 'Bearer ' + bobKey } });
+  check('被移除成员的密钥立即 401', res.status === 401);
+
+  // 改密 + legacy whoami
+  r = await wapi('alice', '/webapi/password', { method: 'POST', body: { old: 'alice-pass-123', new: 'alice-pass-456' } });
+  check('改密成功', r.ok);
+  r = await wapi('alice', '/webapi/login', { method: 'POST', body: { username: 'alice', password: 'alice-pass-123' } });
+  check('旧密码失效', r.status === 401);
+  res = await fetch(`${CLOUD}/v1/whoami`, { headers: H });
+  const lw = await res.json();
+  check('legacy key whoami 归 default 租户', res.status === 200 && lw.tenant_id === 'default' && lw.user === 'legacy');
+} catch (e) {
+  check('门户流程异常', false, String(e));
+}
+
 // ---------- 9. 大屏 ----------
 console.log('\n[9] 大屏 :8787');
 cfg.hub.port = 20000 + ((process.pid + 7) % 20000);

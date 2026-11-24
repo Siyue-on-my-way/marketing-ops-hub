@@ -12,8 +12,8 @@
 | Node.js | ≥ 22.5.0（node:sqlite 需要） | 用户安装（或授权 Agent 装） |
 | Python 3 | ≥ 3.10（仅 doctor/hub wrapper 用，标准库） | 用户安装 |
 | ego lite | v2.2.1+（Citro Labs AI 浏览器） | **用户手动安装**（Agent 不得代装、不得臆造下载源） |
-| 云端服务 | 已部署（nginx 网关 + 素材库，默认 :2680） | 用户/运维（已完成） |
-| workspace_key | 云端 .env 里的 MAITIAN_WORKSPACE_KEY | **用户经环境变量注入，禁止进 git/聊天记录/截图** |
+| 云端服务 | 已部署（门户 :2680，开放注册） | 用户/运维（已完成） |
+| 云访问凭证 | 门户注册后「密钥管理」页的默认密钥 | **用户注册获取**（join 后存本机 credentials.json，0600，禁止进 git/聊天记录/截图） |
 
 ## 步骤
 
@@ -35,16 +35,18 @@ cp -r ~/marketing-ops-hub/content-hub ~/.claude/skills/content-hub
 git clone git@github.com:Siyue-on-my-way/marketing-ops-hub.git ~/marketing-ops-hub   # Windows 建议纯英文路径
 ```
 
-### 2. 配置（Agent 做，key 由用户安全提供）
+### 2. 配置（Agent 做）
 
 ```bash
 cd ~/marketing-ops-hub/backend
 cp config/config.example.json config.json
 # 编辑 config.json：cloud.base_url 填 http://<服务器IP>:2680；hub 端口默认 8787
-# 环境变量注入 key（示例）：
-#   macOS:  export MAITIAN_WORKSPACE_KEY=...   （写进 shell profile）
-#   Windows PowerShell: setx MAITIAN_WORKSPACE_KEY "..."
 ```
+
+云访问凭证（D5 v4）：**不再用 env 共享 key**。入职流程：
+1. 浏览器打开 `http://<服务器IP>:2680/` → 注册（用户名+密码）→ 登录后进入「密钥管理」→ 复制**默认密钥**
+2. Agent 执行（见步骤 4b）：`node src/hub.mjs join <粘贴密钥>` → 写入本机凭证文件（0600），hub 即获得云访问能力
+3. 前置条件表中的 workspace_key 仅服务器部署者持有（legacy 引导），日常用户不再使用
 
 ### 3. ego 全路径探测（Agent 做）
 
@@ -64,6 +66,16 @@ node src/hub.mjs serve        # 本机大屏 :8787 + 守护进程
 ```
 
 验证：`curl 127.0.0.1:8787/api/health` 返回 `{"ok":true,...}`。
+
+### 4b. 云入职 join（Agent 做，密钥由用户从门户复制）
+
+用户在 `http://<服务器IP>:2680/` 注册并登录后，进入「密钥管理」复制**默认密钥**，然后：
+
+```bash
+node src/hub.mjs join <粘贴默认密钥>
+```
+
+验证：输出 `ok: true` + tenant 信息；`node src/hub.mjs doctor` 的 `whoami` 显示租户与角色。
 
 ### 5. 录入账号 + 首次登录（Agent 引导，用户扫码）
 

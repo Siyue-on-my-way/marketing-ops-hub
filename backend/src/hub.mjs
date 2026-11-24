@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 // hub.mjs — 本地中控 CLI（规格 §4.2 命令表）。skill 只通过这些命令驱动 hub。
 // 所有命令输出 JSON（skill 消费）；不向 stdout 打印非 JSON 的过程信息。
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { openDb, kvGet } from './db.mjs';
-import { loadConfig } from './config.mjs';
+import { loadConfig, credentialsPath } from './config.mjs';
 import { nowIso } from './util.mjs';
 import * as planner from './planner.mjs';
 import * as evolution from './evolution.mjs';
@@ -31,6 +32,7 @@ function usage() {
       'node src/hub.mjs proposal add --kind strategy|knowledge|quota|engage --platform <p> [--account <id>] --payload-file <f> [--basis dom_snapshot|screenshot] | list [status] | approve <id> | reject <id>',
       'node src/hub.mjs knowledge sync [--platform <p>] | push <platform> | status',
       'node src/hub.mjs engage feedback <engagement_id>   # 回路③反馈采集（本期占位）',
+      'node src/hub.mjs join <你的API密钥>            # 从门户「密钥管理」复制默认密钥，一次性写入本机凭证',
       'node src/hub.mjs daemon | web | serve',
     ],
   });
@@ -112,7 +114,33 @@ async function main() {
       return print(planner.review(db, cfg, id, Number(rest[0]) || 7));
     }
     case 'doctor':
-      return print(planner.doctor(db, cfg));
+      return print(await planner.doctor(db, cfg));
+    // ---------- 访问体系（ACCESS-SPEC v1.2）：门户注册 → 复制默认密钥 → join 入职 ----------
+    case 'join': {
+      const key = (sub && !sub.startsWith('--') ? sub : '') || argFlag('key') || '';
+      if (!key) {
+        return print({ ok: false, error: '用法: hub join <你的API密钥>（登录门户 http://<服务器>/ → 密钥管理 → 复制默认密钥）' });
+      }
+      if (!cfg.cloud.base_url) return print({ ok: false, error: 'config.json 未配置 cloud.base_url' });
+      let who;
+      try {
+        const ctrl = new AbortController();
+        const t = setTimeout(() => ctrl.abort(), 10000);
+        const res = await fetch(cfg.cloud.base_url.replace(/\/$/, '') + '/v1/whoami', {
+          headers: { authorization: 'Bearer ' + key }, signal: ctrl.signal,
+        });
+        clearTimeout(t);
+        who = await res.json().catch(() => ({}));
+        if (res.status !== 200 || !who.ok) return print({ ok: false, error: '密钥校验失败（HTTP ' + res.status + '）：' + (who.error || '无效密钥') });
+      } catch (e) {
+        return print({ ok: false, error: '无法连接云服务: ' + String(e && e.message || e) });
+      }
+      mkdirSync(dirname(cfg.paths.db), { recursive: true });
+      const credPath = credentialsPath();
+      writeFileSync(credPath, JSON.stringify({ api_key: key, tenant_id: who.tenant_id, tenant_name: who.tenant_name, user: who.user, joined_at: nowIso() }, null, 2) + '\n');
+      try { chmodSync(credPath, 0o600); } catch { /* Windows 忽略 */ }
+      return print({ ok: true, tenant_id: who.tenant_id, tenant_name: who.tenant_name, user: who.user, key_name: who.key_name, credentials: credPath, note: '已写入本机凭证（0600）；hub doctor 可复查' });
+    }
     // ---------- 自进化（EVOLUTION-SPEC）：proposals 唯一进化入口 ----------
     case 'strategy': {
       if (sub === 'show') {

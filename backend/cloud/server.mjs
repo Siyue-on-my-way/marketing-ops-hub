@@ -11,6 +11,7 @@
 //   GET  /webapi/materials/:id/file     302 → /v1/files 签名下载
 //   GET/POST /webapi/me/keys, DELETE /webapi/me/keys/:id  我的 API 密钥管理（加密存储可回显复制；旧版明文仅显示一次）
 //   GET  /webapi/me/keys/:id/reveal    回显密钥明文（复制按钮用）
+//   POST /webapi/me/keys/:id/regenerate 一键重新生成同名新密钥并吊销旧密钥（旧版不可回显密钥用）
 //   GET/POST /webapi/me/invite          邀请链接（/?invite=code）
 //   GET /webapi/members, DELETE /webapi/members/:userId   成员（owner 移除→其密钥全部失效）
 //
@@ -318,6 +319,16 @@ const server = createServer(async (req, res) => {
         if (!plain) return json(res, 500, { ok: false, error: '解密失败（服务器加密密钥已变更？）请新建一把' });
         return json(res, 200, { ok: true, api_key: plain });
       }
+      // 一键重新生成（旧版不可回显密钥专用）：重发同名新密钥（加密存储可复制）并吊销旧密钥
+      if ((m = p.match(/^\/webapi\/me\/keys\/([^/]+)\/regenerate$/)) && req.method === 'POST') {
+        await readBody(req, 0.1);
+        const row = store.db.prepare('SELECT * FROM api_keys WHERE id=? AND user_id=?').get(m[1], wu.id);
+        if (!row || row.revoked_at) return json(res, 404, { ok: false, error: 'key not found' });
+        const created = createApiKey(store.db, wu.id, wu.tenant_id, row.name);
+        store.db.prepare('UPDATE api_keys SET revoked_at=?, revoked_reason=? WHERE id=?').run(nowIso(), '旧版密钥一键重新生成', row.id);
+        const keys = store.db.prepare('SELECT id, name, key_hint, created_at, last_used_at, expires_at, revoked_at FROM api_keys WHERE user_id=? ORDER BY created_at').all(wu.id);
+        return json(res, 200, { ok: true, api_key: created.api_key, keys });
+      }
       if (p === '/webapi/me/invite' && req.method === 'GET') {
         const inv = store.db.prepare(`SELECT * FROM invites WHERE tenant_id=? AND revoked_at IS NULL AND expires_at>? AND used_count<max_uses ORDER BY created_at DESC LIMIT 1`).get(wu.tenant_id, nowIso());
         if (inv) return json(res, 200, { ok: true, invite_code: inv.code, max_uses: inv.max_uses, used_count: inv.used_count, expires_at: inv.expires_at });
@@ -408,6 +419,7 @@ const server = createServer(async (req, res) => {
               { method: 'POST', path: '/webapi/me/keys',         desc: '新建密钥 {name}（明文仅显示一次，可随时在列表复制）' },
               { method: 'DELETE', path: '/webapi/me/keys/:id',   desc: '吊销密钥（至少保留 1 把有效）' },
               { method: 'GET',  path: '/webapi/me/keys/:id/reveal', desc: '回显密钥明文（门户「复制」按钮用；旧版密钥不可回显）' },
+              { method: 'POST', path: '/webapi/me/keys/:id/regenerate', desc: '一键重新生成同名新密钥并吊销该密钥（旧版不可回显密钥用）' },
               { method: 'GET',  path: '/webapi/me/invite',       desc: '获取当前有效邀请链接' },
               { method: 'POST', path: '/webapi/me/invite',       desc: '作废并重新生成邀请链接' },
               { method: 'GET',  path: '/webapi/members',         desc: '成员列表' },

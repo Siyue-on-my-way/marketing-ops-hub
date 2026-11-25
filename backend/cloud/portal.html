@@ -38,6 +38,9 @@
   nav.tabs { display:flex; gap:4px; padding:10px 20px 0; }
   nav.tabs button { background:none; border:1px solid transparent; color:var(--dim); padding:6px 14px; border-radius:8px 8px 0 0; }
   nav.tabs button.active { color:var(--text); background:var(--panel); border-color:var(--line); }
+  td.kc { white-space:nowrap; }
+  td.kc button { visibility:hidden; }
+  tr:hover td.kc button, td.kc:hover button { visibility:visible; }
 </style>
 </head>
 <body>
@@ -176,26 +179,23 @@ async function renderKeys(main) {
   main.innerHTML = `<div class="panel"><h2>我的 API 密钥（CLI 用：node src/hub.mjs join 粘贴）</h2><div id="k-new"></div><div id="k-list"></div></div>`;
   const draw = (rows) => {
     $('#k-list').innerHTML = rows.length ? '<table><tr><th>名称</th><th>密钥</th><th>创建</th><th>最近使用</th><th>状态</th><th></th></tr>' +
-      rows.map((k) => `<tr><td>${esc(k.name)}</td><td class="meta">${esc(k.key_hint||'')}${k.revoked_at ? '' : k.revealable
-        ? ` <button class="ghost" data-rid="${esc(k.id)}">复制</button>`
-        : ` <button class="ghost" data-regen="${esc(k.id)}" title="旧版密钥明文未保存无法复制；点击重发同名新密钥（可复制）并吊销此密钥">重新生成</button> <span class="meta">不可回显</span>`}</td><td class="meta">${esc((k.created_at||'').slice(0,10))}</td>
+      rows.map((k) => {
+        const isDefault = k.name === '默认密钥';
+        const copyBtn = (!k.revoked_at && k.revealable) ? `<button class="ghost" data-rid="${esc(k.id)}" title="点击复制完整密钥">复制</button>` : '';
+        const legacyTag = (!k.revoked_at && !k.revealable) ? ' <span class="meta" title="旧版创建，明文未入库">不可回显</span>' : '';
+        const revokeCell = k.revoked_at ? '' : (isDefault
+          ? '<span class="meta" title="默认密钥不可吊销；如需更换请先新建其他密钥">不可吊销</span>'
+          : `<button class="danger" data-id="${esc(k.id)}">吊销</button>`);
+        return `<tr><td>${esc(k.name)}</td><td class="meta kc">${esc(k.key_hint||'')}${copyBtn}${legacyTag}</td><td class="meta">${esc((k.created_at||'').slice(0,10))}</td>
       <td class="meta">${k.last_used_at ? esc(k.last_used_at.slice(0,16)).replace('T',' ') : '从未'}</td>
       <td>${k.revoked_at ? '<span class="badge">已吊销</span>' : '<span class="badge" style="color:var(--ok)">有效</span>'}</td>
-      <td>${k.revoked_at ? '' : `<button class="danger" data-id="${esc(k.id)}">吊销</button>`}</td></tr>`).join('') + '</table>'
+      <td>${revokeCell}</td></tr>`;
+      }).join('') + '</table>'
       : '<div class="empty">暂无密钥</div>';
     $$('#k-list button.danger').forEach((b) => b.onclick = async () => {
       if (!confirm('吊销后使用该密钥的设备立即失联，确认？')) return;
       const rr = await api('/webapi/me/keys/' + b.dataset.id, { method:'DELETE', body:{} });
       toast(rr.ok ? '已吊销' : (rr.error||'失败'), rr.ok); renderKeys(main);
-    });
-    $$('#k-list button[data-regen]').forEach((b) => b.onclick = async () => {
-      if (!confirm('这把旧密钥的明文当年未保存，无法直接复制。\n点击后将重新生成同名新密钥（此后可随时点「复制」），并吊销这把旧密钥——正在使用旧密钥的设备会立即失联。继续？')) return;
-      const rr = await api('/webapi/me/keys/' + b.dataset.regen + '/regenerate', { method:'POST', body:{} });
-      if (!rr.ok) { toast(rr.error || '重新生成失败', false); return; }
-      $('#k-out').innerHTML = '新密钥已生成（<b>仅此一次显示明文</b>，之后可随时点「复制」取回）：<pre class="key">' + esc(rr.api_key) + '</pre><div class="row"><button id="k-copy-regen">复制密钥</button></div>';
-      $('#k-copy-regen').onclick = async () => { const ok = await copyText(rr.api_key); toast(ok ? '已复制到剪贴板' : '复制失败，请手动选中复制', ok); };
-      toast('已重新生成同名密钥，旧密钥已吊销', true);
-      draw(rr.keys);
     });
     $$('#k-list button[data-rid]').forEach((b) => b.onclick = async () => {
       const rr = await api('/webapi/me/keys/' + b.dataset.rid + '/reveal');

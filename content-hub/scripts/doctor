@@ -6,7 +6,7 @@
   "commands": {"node": "...", "python": "...", "hub": "...", "ego": "..."},   # 全路径，rpb 式
   "ego":     {"found": bool, "version": str|None, "spaces": [{"account":..,"space":..,"login_ok":..,"display_name":..}]},
   "hub":     {"alive": bool, "url": str},
-  "cloud":   {"reachable": bool, "base_url": str|None, "auth_ok": bool|None},
+  "cloud":   {"reachable": bool, "base_url": str|None, "auth_ok": bool|None, "whoami": {"tenant_name":..,"user":..,"role":..}|None},
   "accounts": [...],           # hub doctor 的登录态矩阵
   "ready":   bool,
   "actions": ["..."],          # 未就绪项的下一步（转交用户/Agent 的明确动作）
@@ -25,8 +25,31 @@ import urllib.request
 import urllib.error
 
 HOME = os.path.expanduser("~")
-HUB_HOME = os.environ.get("MAITIAN_HUB_HOME") or os.path.join(HOME, "maitian-hub")
 HUB_PORT = 8787
+
+
+def hub_home_candidates():
+    """候选 hub 安装根（backend 目录：含 src/hub.mjs、config.json、data/credentials.json）。"""
+    cands = []
+    env = os.environ.get("MAITIAN_HUB_HOME")
+    if env:
+        cands.append(env)
+    cands += [
+        os.path.join(HOME, "marketing-ops-hub", "backend"),  # agent-install.md 默认克隆位置
+        os.path.join(HOME, "maitian-hub", "backend"),        # 旧文档位置
+        os.path.join(HOME, "maitian-hub"),                   # 旧单目录布局
+    ]
+    return cands
+
+
+def find_hub():
+    """返回 (hub.mjs 路径, 错误提示, 解析到的 hub 根目录)。"""
+    for d in hub_home_candidates():
+        p = os.path.join(d, "src", "hub.mjs")
+        if os.path.isfile(p):
+            return p, None, d
+    tried = ", ".join(hub_home_candidates())
+    return None, f"未找到 hub.mjs（试过: {tried}）：按 agent-install.md 克隆仓库到 ~/marketing-ops-hub，或设 MAITIAN_HUB_HOME 指向 backend 目录", None
 
 
 def find_node():
@@ -38,11 +61,6 @@ def find_node():
 
 def find_python():
     return sys.executable or shutil.which("python3"), None
-
-
-def find_hub():
-    p = os.path.join(HUB_HOME, "src", "hub.mjs")
-    return (p if os.path.isfile(p) else None), (None if os.path.isfile(p) else f"未找到 {p}：先按 agent-install.md 克隆仓库到 {HUB_HOME}（或设 MAITIAN_HUB_HOME）")
 
 
 def find_ego():
@@ -87,29 +105,55 @@ def probe_hub():
         return False, None
 
 
-def probe_cloud():
+def credentials_key(hub_dir):
+    """凭证解析（与 backend/src/config.mjs workspaceKey 同序）：credentials.json（hub join 写入）优先，env 兜底。返回 (key, 来源路径|None)。"""
+    if hub_dir:
+        cred = os.path.join(hub_dir, "data", "credentials.json")
+        if os.path.isfile(cred):
+            try:
+                with open(cred, encoding="utf-8") as f:
+                    k = (json.load(f) or {}).get("api_key")
+                if k:
+                    return k, cred
+            except Exception:
+                pass
+    k = os.environ.get("MAITIAN_WORKSPACE_KEY")
+    return (k, None) if k else (None, None)
+
+
+def probe_cloud(hub_dir):
     base = None
-    cfg = os.path.join(HUB_HOME, "config.json")
-    if os.path.isfile(cfg):
-        try:
-            base = (json.load(open(cfg, encoding="utf-8")).get("cloud") or {}).get("base_url") or None
-        except Exception:
-            pass
+    if hub_dir:
+        cfg = os.path.join(hub_dir, "config.json")
+        if os.path.isfile(cfg):
+            try:
+                base = (json.load(open(cfg, encoding="utf-8")).get("cloud") or {}).get("base_url") or None
+            except Exception:
+                pass
     if not base:
-        return False, None, None, f"cloud.base_url 未配置（编辑 {cfg}）"
-    key = os.environ.get("MAITIAN_WORKSPACE_KEY")
+        return False, None, None, None, f"cloud.base_url 未配置（编辑 {hub_dir or '~/marketing-ops-hub/backend'}/config.json）"
+    key, cred_src = credentials_key(hub_dir)
+    if not key:
+        return True, True, None, None, "云凭证缺失：门户「密钥管理」复制默认密钥 → node src/hub.mjs join <密钥>"
+    whoami = None
+    auth_err = None
     try:
         http_json(base.rstrip("/") + "/v1/ping", timeout=5)
         auth_ok = None
-        if key:
-            try:
-                http_json(base.rstrip("/") + "/v1/materials?limit=1", timeout=5, headers={"Authorization": "Bearer " + key})
+        try:
+            who = http_json(base.rstrip("/") + "/v1/whoami", timeout=5, headers={"Authorization": "Bearer " + key})
+            if who.get("ok"):
                 auth_ok = True
-            except urllib.error.HTTPError as e:
-                auth_ok = e.code != 401
-        return True, True, auth_ok, (None if auth_ok is not False else "workspace_key 无效（401）：核对 MAITIAN_WORKSPACE_KEY")
+                whoami = {k: who.get(k) for k in ("tenant_id", "tenant_name", "user", "role", "key_name")}
+            else:
+                auth_ok = False
+                auth_err = who.get("error") or "whoami 未通过"
+        except urllib.error.HTTPError as e:
+            auth_ok = e.code != 401
+            auth_err = f"whoami HTTP {e.code}" + ("：密钥无效或被吊销（401）" if e.code == 401 else "")
+        return True, base, auth_ok, whoami, (None if auth_ok else (auth_err or "云凭证校验失败：重新 join（门户密钥页取新 key）"))
     except Exception as e:
-        return False, False, None, "云不可达: " + str(e)[:120]
+        return False, False, None, None, "云不可达: " + str(e)[:120]
 
 
 def hub_accounts_matrix():
@@ -129,10 +173,14 @@ def main():
     actions = []
     node, node_err = find_node()
     py, py_err = find_python()
-    hub, hub_err = find_hub()
+    hub, hub_err, hub_dir = find_hub()
     ego, ego_err = find_ego()
+    ego_version = None
+    if ego:
+        m = re.search(r"(\d+(?:\.\d+)+)", ego)
+        ego_version = m.group(1) if m else None
     hub_alive, _ = probe_hub()
-    cloud_reachable, cloud_cfgured, cloud_auth, cloud_err = probe_cloud()
+    cloud_reachable, cloud_cfgured, cloud_auth, whoami, cloud_err = probe_cloud(hub_dir)
 
     for err in (node_err, py_err, hub_err, ego_err, cloud_err):
         if err:
@@ -144,11 +192,11 @@ def main():
 
     out = {
         "commands": {"node": node, "python": py, "hub": hub, "ego": ego},
-        "ego": {"found": bool(ego), "version": None, "spaces": spaces},
+        "ego": {"found": bool(ego), "version": ego_version, "spaces": spaces},
         "hub": {"alive": hub_alive, "url": f"http://127.0.0.1:{HUB_PORT}"},
-        "cloud": {"reachable": bool(cloud_reachable), "base_url": cloud_cfgured, "auth_ok": cloud_auth},
+        "cloud": {"reachable": bool(cloud_reachable), "base_url": cloud_cfgured, "auth_ok": cloud_auth, "whoami": whoami},
         "accounts": spaces,
-        "ready": bool(node and hub and ego and hub_alive and cloud_reachable),
+        "ready": bool(node and hub and ego and hub_alive and cloud_reachable and cloud_auth),
         "actions": actions,
     }
     print(json.dumps(out, ensure_ascii=False, indent=2))

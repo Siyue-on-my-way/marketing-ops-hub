@@ -51,8 +51,8 @@ cp config/config.example.json config.json
 ### 3. ego 全路径探测（Agent 做）
 
 在仓库根运行 `python3 content-hub/scripts/doctor`。它会：
-- 探测 ego-browser.exe 全路径（Windows 在 `C:\Program Files\Citro Labs\ego lite\Application\<版本>\`，取最高版本）并写回 `backend/config.json` 的 `ego.path`；
-- 探测 node/python/hub/云连通性；
+- 探测 ego-browser 全路径（Windows 在 `C:\Program Files\Citro Labs\ego lite\Application\<版本>\`，取最高版本），写入输出 JSON 的 `commands.ego`（之后 Agent 一律用该全路径调用，不写死路径）；
+- 探测 node/python/hub/云连通性，并用本机凭证（`hub join` 写入的 `backend/data/credentials.json`）做 `whoami` 租户校验；
 - 输出 JSON `commands.*` 全路径与 `actions[]`（缺什么补什么）。
 
 **ego 探测不到 → 停，转交用户手动安装 ego lite，不得继续。**

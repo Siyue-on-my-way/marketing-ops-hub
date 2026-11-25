@@ -2,7 +2,8 @@
 """content-hub/scripts/hub — hub CLI wrapper。
 
 用法：hub <与 node src/hub.mjs 完全一致的参数>
-定位 hub.mjs：MAITIAN_HUB_HOME 环境变量 → 否则相对本脚本 ../../src/hub.mjs → 否则 ~/maitian-hub/src/hub.mjs。
+定位 hub.mjs：MAITIAN_HUB_HOME 环境变量 → 相对本脚本 ../../backend/src/hub.mjs（多目录布局）
+→ ~/marketing-ops-hub/backend/src/hub.mjs（agent-install.md 默认克隆位置）→ 旧布局 ~/maitian-hub/src|backend/src/hub.mjs。
 用列表参数调用（无 shell 引号问题，跨平台）；退出码透传。
 """
 import json
@@ -11,6 +12,7 @@ import subprocess
 import sys
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+HOME = os.path.expanduser("~")
 
 
 def locate():
@@ -18,8 +20,12 @@ def locate():
     cands = []
     if env:
         cands.append(os.path.join(env, "src", "hub.mjs"))
-    cands.append(os.path.normpath(os.path.join(SCRIPT_DIR, "..", "..", "src", "hub.mjs")))
-    cands.append(os.path.join(os.path.expanduser("~"), "maitian-hub", "src", "hub.mjs"))
+    cands += [
+        os.path.normpath(os.path.join(SCRIPT_DIR, "..", "..", "backend", "src", "hub.mjs")),
+        os.path.join(HOME, "marketing-ops-hub", "backend", "src", "hub.mjs"),
+        os.path.join(HOME, "maitian-hub", "backend", "src", "hub.mjs"),
+        os.path.join(HOME, "maitian-hub", "src", "hub.mjs"),
+    ]
     for c in cands:
         if os.path.isfile(c):
             return c

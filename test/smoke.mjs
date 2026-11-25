@@ -322,10 +322,13 @@ try {
   const keysNow = (await wapi('alice', '/webapi/me/keys')).keys;
   const defaultKey = keysNow.find((k) => k.name === '默认密钥');
   r = await wapi('alice', '/webapi/me/keys/' + defaultKey.id, { method: 'DELETE', body: {} });
-  check('吊销默认密钥', r.ok);
-  res = await fetch(`${CLOUD}/v1/whoami`, { headers: { authorization: 'Bearer ' + aliceKey } });
+  check('默认密钥拒绝吊销（密钥交互 v2：账号始终保留默认密钥）', !r.ok);
+  const hubKeyId = (await wapi('alice', '/webapi/me/keys')).keys.find((k) => k.name === '服务器hub').id;
+  r = await wapi('alice', '/webapi/me/keys/' + hubKeyId, { method: 'DELETE', body: {} });
+  check('吊销新建密钥', r.ok);
+  res = await fetch(`${CLOUD}/v1/whoami`, { headers: { authorization: 'Bearer ' + newKey } });
   check('被吊销密钥立即 401', res.status === 401);
-  r = await wapi('alice', '/webapi/me/keys/' + (await wapi('alice', '/webapi/me/keys')).keys.find((k) => k.revoked_at).id, { method: 'DELETE', body: {} });
+  r = await wapi('alice', '/webapi/me/keys/' + hubKeyId, { method: 'DELETE', body: {} });
   check('重复吊销幂等', r.ok);
 
   // 邀请链接：alice 邀请 bob 加入同一 workspace

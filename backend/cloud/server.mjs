@@ -9,7 +9,8 @@
 //   POST /webapi/logout | /webapi/password {old,new}
 //   GET  /webapi/materials?q&platform&limit&offset      本租户素材（只读）
 //   GET  /webapi/materials/:id/file     302 → /v1/files 签名下载
-//   GET/POST /webapi/me/keys, DELETE /webapi/me/keys/:id  我的 API 密钥管理（新建明文仅显示一次）
+//   GET/POST /webapi/me/keys, DELETE /webapi/me/keys/:id  我的 API 密钥管理（加密存储可回显复制；旧版明文仅显示一次）
+//   GET  /webapi/me/keys/:id/reveal    回显密钥明文（复制按钮用）
 //   GET/POST /webapi/me/invite          邀请链接（/?invite=code）
 //   GET /webapi/members, DELETE /webapi/members/:userId   成员（owner 移除→其密钥全部失效）
 //
@@ -19,7 +20,7 @@
 //
 // 安全边界（D5 v4）：密码会话只能看与管理；所有写端点（上传/claim/used）只认密钥。
 import { createServer } from 'node:http';
-import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHmac, createCipheriv, createDecipheriv, randomBytes, timingSafeEqual } from 'node:crypto';
 import { readFileSync, existsSync, statSync, writeFileSync, readdirSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -47,6 +48,30 @@ function signSecret() {
   const s = randomBytes(32).toString('hex');
   writeFileSync(store.secretFile, s);
   return s;
+}
+
+// ---- API 密钥可回显加密（AES-256-GCM；密钥存 data/.key_enc_secret，不进 git）----
+function keyEncSecret() {
+  if (process.env.MAITIAN_KEY_ENC_SECRET) return process.env.MAITIAN_KEY_ENC_SECRET;
+  if (existsSync(store.keySecretFile)) return readFileSync(store.keySecretFile, 'utf8').trim();
+  const s = randomBytes(32).toString('hex');
+  writeFileSync(store.keySecretFile, s);
+  return s;
+}
+function encryptKey(plain) {
+  const key = Buffer.from(keyEncSecret(), 'hex');
+  const iv = randomBytes(12);
+  const c = createCipheriv('aes-256-gcm', key, iv);
+  const enc = Buffer.concat([c.update(String(plain), 'utf8'), c.final()]);
+  return [iv, c.getAuthTag(), enc].map((b) => b.toString('base64url')).join('.');
+}
+function decryptKey(token) {
+  try {
+    const [iv, tag, enc] = token.split('.').map((s) => Buffer.from(s, 'base64url'));
+    const d = createDecipheriv('aes-256-gcm', Buffer.from(keyEncSecret(), 'hex'), iv);
+    d.setAuthTag(tag);
+    return Buffer.concat([d.update(enc), d.final()]).toString('utf8');
+  } catch { return null; }
 }
 
 function json(res, code, obj, extraHeaders = {}) {
@@ -130,8 +155,8 @@ const genId = (p) => p + randomBytes(6).toString('hex');
 function createApiKey(db, userId, tenantId, name) {
   const apiKey = 'mtk_' + randomBytes(24).toString('hex');
   const id = genId('k');
-  db.prepare('INSERT INTO api_keys(id, user_id, tenant_id, name, key_hash, key_hint, created_at) VALUES(?,?,?,?,?,?,?)')
-    .run(id, userId, tenantId, String(name || '默认密钥').slice(0, 40), sha256(apiKey), apiKey.slice(0, 6) + '…', nowIso());
+  db.prepare('INSERT INTO api_keys(id, user_id, tenant_id, name, key_hash, key_hint, key_enc, created_at) VALUES(?,?,?,?,?,?,?,?)')
+    .run(id, userId, tenantId, String(name || '默认密钥').slice(0, 40), sha256(apiKey), apiKey.slice(0, 6) + '…', encryptKey(apiKey), nowIso());
   return { id, api_key: apiKey };
 }
 
@@ -266,7 +291,7 @@ const server = createServer(async (req, res) => {
         return res.end();
       }
       if (p === '/webapi/me/keys' && req.method === 'GET') {
-        const keys = store.db.prepare('SELECT id, name, key_hint, created_at, last_used_at, expires_at, revoked_at, revoked_reason FROM api_keys WHERE user_id=? ORDER BY created_at').all(wu.id);
+        const keys = store.db.prepare('SELECT id, name, key_hint, created_at, last_used_at, expires_at, revoked_at, revoked_reason, key_enc IS NOT NULL AS revealable FROM api_keys WHERE user_id=? ORDER BY created_at').all(wu.id);
         return json(res, 200, { ok: true, keys });
       }
       if (p === '/webapi/me/keys' && req.method === 'POST') {
@@ -283,6 +308,15 @@ const server = createServer(async (req, res) => {
         if (active <= 1) return json(res, 400, { ok: false, error: '至少保留 1 把有效密钥（可先新建再吊销）' });
         store.db.prepare('UPDATE api_keys SET revoked_at=?, revoked_reason=? WHERE id=?').run(nowIso(), '用户自行吊销', m[1]);
         return json(res, 200, { ok: true });
+      }
+      // 回显密钥明文（门户「复制」按钮用；仅登录会话可调，仅对加密存储的密钥）
+      if ((m = p.match(/^\/webapi\/me\/keys\/([^/]+)\/reveal$/)) && req.method === 'GET') {
+        const row = store.db.prepare('SELECT * FROM api_keys WHERE id=? AND user_id=?').get(m[1], wu.id);
+        if (!row || row.revoked_at) return json(res, 404, { ok: false, error: 'key not found' });
+        if (!row.key_enc) return json(res, 400, { ok: false, error: '该密钥创建于旧版本（明文从未保存），无法回显；请新建一把' });
+        const plain = decryptKey(row.key_enc);
+        if (!plain) return json(res, 500, { ok: false, error: '解密失败（服务器加密密钥已变更？）请新建一把' });
+        return json(res, 200, { ok: true, api_key: plain });
       }
       if (p === '/webapi/me/invite' && req.method === 'GET') {
         const inv = store.db.prepare(`SELECT * FROM invites WHERE tenant_id=? AND revoked_at IS NULL AND expires_at>? AND used_count<max_uses ORDER BY created_at DESC LIMIT 1`).get(wu.tenant_id, nowIso());
@@ -370,9 +404,10 @@ const server = createServer(async (req, res) => {
               { method: 'POST', path: '/webapi/password',        desc: '改密 {old, new}' },
               { method: 'GET',  path: '/webapi/materials',       desc: '本租户素材（只读，支持 q/platform/limit/offset）' },
               { method: 'GET',  path: '/webapi/materials/:id/file', desc: '302 → 签名下载' },
-              { method: 'GET',  path: '/webapi/me/keys',         desc: '我的 API 密钥列表' },
-              { method: 'POST', path: '/webapi/me/keys',         desc: '新建密钥 {name}（明文仅显示一次）' },
+              { method: 'GET',  path: '/webapi/me/keys',         desc: '我的 API 密钥列表（含 revealable 标记）' },
+              { method: 'POST', path: '/webapi/me/keys',         desc: '新建密钥 {name}（明文仅显示一次，可随时在列表复制）' },
               { method: 'DELETE', path: '/webapi/me/keys/:id',   desc: '吊销密钥（至少保留 1 把有效）' },
+              { method: 'GET',  path: '/webapi/me/keys/:id/reveal', desc: '回显密钥明文（门户「复制」按钮用；旧版密钥不可回显）' },
               { method: 'GET',  path: '/webapi/me/invite',       desc: '获取当前有效邀请链接' },
               { method: 'POST', path: '/webapi/me/invite',       desc: '作废并重新生成邀请链接' },
               { method: 'GET',  path: '/webapi/members',         desc: '成员列表' },

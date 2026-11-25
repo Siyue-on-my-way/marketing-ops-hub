@@ -56,6 +56,17 @@ const INVITE = new URLSearchParams(location.search).get('invite') || '';
 let ME = null;
 
 function toast(msg, ok=true) { const t=$('#toast'); t.textContent=msg; t.style.borderColor=ok?'var(--ok)':'var(--bad)'; t.style.display='block'; setTimeout(()=>t.style.display='none',4000); }
+// 复制到剪贴板：HTTP 环境无 navigator.clipboard，回退 execCommand
+async function copyText(t) {
+  try { await navigator.clipboard.writeText(t); return true; } catch {}
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = t; ta.style.cssText = 'position:fixed;top:-999px;opacity:0';
+    document.body.appendChild(ta); ta.focus(); ta.select();
+    const ok = document.execCommand('copy');
+    ta.remove(); return ok;
+  } catch { return false; }
+}
 async function api(path, opts={}) {
   const o = { ...opts, headers: { ...(opts.headers||{}) } };
   if (o.body && !(o.body instanceof FormData) && typeof o.body !== 'string') { o.body = JSON.stringify(o.body); o.headers['content-type']='application/json'; }
@@ -106,8 +117,9 @@ function renderAuth(mode) {
 }
 function showKeyOnce(key) {
   $('#app').insertAdjacentHTML('afterbegin', `<div class="panel"><h2>你的默认 API 密钥（仅此一次显示，请立即复制保存）</h2><pre class="key">${esc(key)}</pre>
-  <div class="meta">CLI 连接：在 hub 所在机器执行 <code>node src/hub.mjs join</code> 并粘贴此密钥。此页可随时新建更多密钥。</div>
-  <button class="ghost" onclick="this.parentElement.remove()">我已保存</button></div>`);
+  <div class="meta">CLI 连接：在 hub 所在机器执行 <code>node src/hub.mjs join</code> 并粘贴此密钥。此页可随时新建更多密钥；之后也可在「密钥管理」列表点「复制」随时取回。</div>
+  <div class="row"><button id="sk-copy">复制密钥</button><button class="ghost" onclick="this.closest('.panel').remove()">我已保存</button></div></div>`);
+  $('#sk-copy').onclick = async () => { const ok = await copyText(key); toast(ok ? '已复制到剪贴板' : '复制失败，请手动选中复制', ok); };
 }
 
 // ---------- 主视图 ----------
@@ -164,7 +176,9 @@ async function renderKeys(main) {
   main.innerHTML = `<div class="panel"><h2>我的 API 密钥（CLI 用：node src/hub.mjs join 粘贴）</h2><div id="k-new"></div><div id="k-list"></div></div>`;
   const draw = (rows) => {
     $('#k-list').innerHTML = rows.length ? '<table><tr><th>名称</th><th>密钥</th><th>创建</th><th>最近使用</th><th>状态</th><th></th></tr>' +
-      rows.map((k) => `<tr><td>${esc(k.name)}</td><td class="meta">${esc(k.key_hint||'')}</td><td class="meta">${esc((k.created_at||'').slice(0,10))}</td>
+      rows.map((k) => `<tr><td>${esc(k.name)}</td><td class="meta">${esc(k.key_hint||'')}${k.revoked_at ? '' : k.revealable
+        ? ` <button class="ghost" data-rid="${esc(k.id)}">复制</button>`
+        : ' <span class="meta" title="旧版创建，明文未保存，无法回显">不可回显</span>'}</td><td class="meta">${esc((k.created_at||'').slice(0,10))}</td>
       <td class="meta">${k.last_used_at ? esc(k.last_used_at.slice(0,16)).replace('T',' ') : '从未'}</td>
       <td>${k.revoked_at ? '<span class="badge">已吊销</span>' : '<span class="badge" style="color:var(--ok)">有效</span>'}</td>
       <td>${k.revoked_at ? '' : `<button class="danger" data-id="${esc(k.id)}">吊销</button>`}</td></tr>`).join('') + '</table>'
@@ -174,6 +188,13 @@ async function renderKeys(main) {
       const rr = await api('/webapi/me/keys/' + b.dataset.id, { method:'DELETE', body:{} });
       toast(rr.ok ? '已吊销' : (rr.error||'失败'), rr.ok); renderKeys(main);
     });
+    $$('#k-list button[data-rid]').forEach((b) => b.onclick = async () => {
+      const rr = await api('/webapi/me/keys/' + b.dataset.rid + '/reveal');
+      if (!rr.ok) { toast(rr.error || '回显失败', false); return; }
+      const ok = await copyText(rr.api_key);
+      toast(ok ? '密钥已复制到剪贴板' : '复制失败，请手动复制：' + rr.api_key, ok);
+      if (ok) b.textContent = '✓ 已复制'; setTimeout(() => { b.textContent = '复制'; }, 1500);
+    });
   };
   draw(r.keys || []);
   $('#k-new').innerHTML = `<div class="row" style="margin-bottom:10px"><input id="k-name" placeholder="密钥名称（如：服务器hub / 张三-笔记本）" style="max-width:300px"><button id="k-create">新建密钥</button></div><div class="okmsg" id="k-out"></div>`;
@@ -181,7 +202,8 @@ async function renderKeys(main) {
     const name = $('#k-name').value.trim() || '未命名密钥';
     const rr = await api('/webapi/me/keys', { method:'POST', body:{ name } });
     if (!rr.ok) { toast(rr.error||'创建失败', false); return; }
-    $('#k-out').innerHTML = '新密钥（<b>仅此一次显示，立即复制</b>）：<pre class="key">' + esc(rr.api_key) + '</pre>';
+    $('#k-out').innerHTML = '新密钥（<b>仅此一次显示，立即复制</b>）：<pre class="key">' + esc(rr.api_key) + '</pre><div class="row"><button id="k-copy">复制密钥</button></div>';
+    $('#k-copy').onclick = async () => { const ok = await copyText(rr.api_key); toast(ok ? '已复制到剪贴板' : '复制失败，请手动选中复制', ok); };
     draw(rr.keys);
   };
 }
@@ -194,7 +216,7 @@ async function renderInvite(main) {
     ${link ? `<pre class="key">${esc(link)}</pre><div class="row"><button class="ghost" id="iv-copy">复制链接</button><button class="ghost" id="iv-new">重新生成</button><span class="meta">有效期 7 天，限 ${r.max_uses||1} 人使用，已用 ${r.used_count||0} 次</span></div>` : '<div class="empty">生成中…</div>'}
   </div>`;
   if (link) {
-    $('#iv-copy').onclick = () => { navigator.clipboard.writeText(link).then(() => toast('已复制')); };
+    $('#iv-copy').onclick = async () => { const ok = await copyText(link); toast(ok ? '已复制' : '复制失败，请手动选中复制', ok); };
     $('#iv-new').onclick = async () => { await api('/webapi/me/invite', { method:'POST', body:{} }); renderInvite(main); };
   }
 }

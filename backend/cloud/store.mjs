@@ -96,6 +96,7 @@ export function openStore(dataDir) {
   };
   ensureCol('materials', 'tenant_id');
   ensureCol('journals', 'tenant_id');
+  ensureCol('api_keys', 'key_enc');   // 密钥密文（AES-256-GCM；支持门户「复制/回显」）
   db.prepare(`INSERT OR IGNORE INTO tenants(id, name, owner_user_id, created_at) VALUES('default', '默认团队', NULL, ?)`)
     .run(new Date().toISOString());
   db.prepare(`UPDATE materials SET tenant_id='default' WHERE tenant_id IS NULL`).run();
@@ -105,6 +106,7 @@ export function openStore(dataDir) {
     materialsDir: join(dataDir, 'materials'),
     knowledgeDir: join(dataDir, 'knowledge'),          // 回路②：知识包热更分发（versions/ 同级归档）
     secretFile: join(dataDir, '.sign_secret'),
+    keySecretFile: join(dataDir, '.key_enc_secret'),   // 密钥回显加密密钥（与签名密钥分离）
   };
 }
 

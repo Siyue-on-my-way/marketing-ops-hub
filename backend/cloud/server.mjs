@@ -14,7 +14,7 @@
 //   GET /webapi/members, DELETE /webapi/members/:userId   成员（owner 移除→其密钥全部失效）
 //
 // CLI 密钥通道（Bearer 设备密钥；密钥继承用户的租户）：
-//   /v1/materials(+claim/release/used/download) /v1/journal /v1/knowledge(+versions) /v1/whoami /v1/ping
+//   /v1/materials(+claim/release/used/download) /v1/journal /v1/knowledge(+versions) /v1/whoami /v1/endpoints /v1/ping
 //   兼容：旧共享 workspace_key（keys 表）映射 default 租户，行为不变。
 //
 // 安全边界（D5 v4）：密码会话只能看与管理；所有写端点（上传/claim/used）只认密钥。
@@ -334,6 +334,53 @@ const server = createServer(async (req, res) => {
       const user = keyInfo.user_id ? store.db.prepare('SELECT username, role FROM users WHERE id=?').get(keyInfo.user_id) : null;
       const tenant = store.db.prepare('SELECT name FROM tenants WHERE id=?').get(keyInfo.tenant_id);
       return json(res, 200, { ok: true, tenant_id: keyInfo.tenant_id, tenant_name: tenant ? tenant.name : '', role: keyInfo.kind === 'legacy' ? 'admin' : (user ? user.role : 'member'), user: user ? user.username : 'legacy', key_name: keyInfo.name });
+    }
+
+    // 接口发现：CLI 用任意有效密钥查询本服务全部开放端点（自描述目录，随代码同步更新）
+    if (p === '/v1/endpoints' && req.method === 'GET') {
+      return json(res, 200, {
+        ok: true, service: 'maitian-cloud', now: nowIso(),
+        channels: {
+          cli: {
+            auth: 'Authorization: Bearer <api_key>（门户「密钥管理」页新建，或注册时发放的默认密钥）',
+            endpoints: [
+              { method: 'GET',  path: '/v1/ping',                          desc: '健康检查（免鉴权）' },
+              { method: 'GET',  path: '/v1/endpoints',                     desc: '本目录：查询全部开放接口' },
+              { method: 'GET',  path: '/v1/whoami',                        desc: '当前密钥归属（租户/角色/密钥名）' },
+              { method: 'POST', path: '/v1/materials',                     desc: '上传素材（multipart：file + meta JSON {title,type:video|image|text,platform_tags[],note?,source?}；sha256 去重）' },
+              { method: 'GET',  path: '/v1/materials?platform=&limit=',    desc: '素材列表（platform ∈ common,xhs,douyin,tiktok,yt,bili,x,xianyu；含 common）' },
+              { method: 'POST', path: '/v1/materials/:id/claim',           desc: '占用锁 {device}（30 分钟自动释放，防两人发同一素材）' },
+              { method: 'POST', path: '/v1/materials/:id/release',         desc: '释放占用' },
+              { method: 'POST', path: '/v1/materials/:id/used',            desc: '发布成功回写 {platform, account_id?, url?}' },
+              { method: 'GET',  path: '/v1/materials/:id/download',        desc: '302 → 签名下载 URL（1 天有效）' },
+              { method: 'POST', path: '/v1/journal',                       desc: '跨设备战报 {device, action, account_id?, detail, ts?}' },
+              { method: 'GET',  path: '/v1/knowledge?platform=',           desc: '读平台知识包（platform ∈ xhs,douyin,tiktok,yt,bili,x,xianyu）' },
+              { method: 'PUT',  path: '/v1/knowledge/:platform',           desc: '热更知识包 {json, base_version}（乐观锁：json.version=base_version+1）' },
+              { method: 'GET',  path: '/v1/knowledge/versions/:platform',  desc: '知识包历史版本列表' },
+              { method: 'POST', path: '/v1/keys/rotate',                   desc: '旧共享 workspace_key 轮换（仅 legacy key；7 天双活）' },
+            ],
+          },
+          web: {
+            auth: 'Cookie mt_session（门户登录/注册后自动携带；HttpOnly，前端无需管理）',
+            endpoints: [
+              { method: 'POST', path: '/webapi/register',        desc: '注册（account=邮箱/手机号 + password/password2；invite_code? 加入对方 workspace；成功即发默认 API 密钥，明文仅显示一次）' },
+              { method: 'POST', path: '/webapi/login',           desc: '登录（下发 7 天会话 cookie）' },
+              { method: 'GET',  path: '/webapi/me',              desc: '会话自省（刷新恢复登录态）' },
+              { method: 'POST', path: '/webapi/logout',          desc: '退出（作废当前会话）' },
+              { method: 'POST', path: '/webapi/password',        desc: '改密 {old, new}' },
+              { method: 'GET',  path: '/webapi/materials',       desc: '本租户素材（只读，支持 q/platform/limit/offset）' },
+              { method: 'GET',  path: '/webapi/materials/:id/file', desc: '302 → 签名下载' },
+              { method: 'GET',  path: '/webapi/me/keys',         desc: '我的 API 密钥列表' },
+              { method: 'POST', path: '/webapi/me/keys',         desc: '新建密钥 {name}（明文仅显示一次）' },
+              { method: 'DELETE', path: '/webapi/me/keys/:id',   desc: '吊销密钥（至少保留 1 把有效）' },
+              { method: 'GET',  path: '/webapi/me/invite',       desc: '获取当前有效邀请链接' },
+              { method: 'POST', path: '/webapi/me/invite',       desc: '作废并重新生成邀请链接' },
+              { method: 'GET',  path: '/webapi/members',         desc: '成员列表' },
+              { method: 'DELETE', path: '/webapi/members/:id',   desc: '移除成员（仅 owner；其密钥全部失效）' },
+            ],
+          },
+        },
+      });
     }
 
     if (p === '/v1/materials' && req.method === 'POST') {

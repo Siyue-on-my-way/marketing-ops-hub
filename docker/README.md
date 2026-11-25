@@ -15,6 +15,14 @@ docker compose ps       # 等 backend / maitian-cloud / frontend 均 healthy
 - 运营大屏 `http://<host>:<GATEWAY_PORT>/console/?token=<SERVER_TOKEN>`（hub 待审队列，管理员用；token 会被浏览器记住）。
 API 健康检查（免鉴权）：`curl http://<host>:<GATEWAY_PORT>/api/health` → `{"ok":true,"version":"0.1.0",...}`。
 
+CLI 接口发现（任意有效 API 密钥，查询全部开放端点）：
+
+```bash
+curl -H "Authorization: Bearer <api_key>" http://<host>:<GATEWAY_PORT>/v1/endpoints
+```
+
+注册用户自带默认密钥（注册成功页仅显示一次；之后可在门户「密钥管理」页新建）。
+
 ## 运维速查
 
 ```bash

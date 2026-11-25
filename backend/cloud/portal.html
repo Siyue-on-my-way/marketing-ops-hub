@@ -187,7 +187,7 @@ async function renderKeys(main) {
 
 async function renderInvite(main) {
   const r = await api('/webapi/me/invite');
-  const link = r.invite_code ? `${location.origin}/web/register?invite=${encodeURIComponent(r.invite_code)}` : null;
+  const link = r.invite_code ? `${location.origin}/?invite=${encodeURIComponent(r.invite_code)}` : null;
   main.innerHTML = `<div class="panel"><h2>邀请加入本 workspace</h2>
     <div class="meta" style="margin-bottom:10px">把下面的链接发给对方：对方打开即进入本 workspace 的注册页（注册后成为成员，默认获得一把自己的 API 密钥）。${ME.role==='owner'?'':'（你是成员，也可邀请；owner 可移除成员）'}</div>
     ${link ? `<pre class="key">${esc(link)}</pre><div class="row"><button class="ghost" id="iv-copy">复制链接</button><button class="ghost" id="iv-new">重新生成</button><span class="meta">有效期 7 天，限 ${r.max_uses||1} 人使用，已用 ${r.used_count||0} 次</span></div>` : '<div class="empty">生成中…</div>'}
@@ -214,7 +214,14 @@ async function renderMembers(main) {
   });
 }
 
-render();
+// ---------- 启动：用已有会话 cookie 恢复登录态（刷新不掉线）----------
+(async function boot() {
+  try {
+    const r = await api('/webapi/me');
+    if (r.ok) ME = { username: r.username, role: r.role, tenant_id: r.tenant_id, tenant_name: r.tenant_name };
+  } catch { /* 网络异常/未登录 → 登录页 */ }
+  render();
+})();
 </script>
 </body>
 </html>

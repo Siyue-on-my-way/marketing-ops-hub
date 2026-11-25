@@ -5,11 +5,12 @@
 //   GET  /                              门户单页（未登录=登录/注册；已登录=素材台/密钥/邀请/成员）
 //   POST /webapi/register               {username,password,invite_code?} 注册（invite 空=建 workspace 为 owner；有=加入）
 //   POST /webapi/login                  {username,password}
+//   GET  /webapi/me                     会话自省（门户刷新恢复登录态）
 //   POST /webapi/logout | /webapi/password {old,new}
 //   GET  /webapi/materials?q&platform&limit&offset      本租户素材（只读）
 //   GET  /webapi/materials/:id/file     302 → /v1/files 签名下载
 //   GET/POST /webapi/me/keys, DELETE /webapi/me/keys/:id  我的 API 密钥管理（新建明文仅显示一次）
-//   GET/POST /webapi/me/invite          邀请链接（/web/register?invite=code）
+//   GET/POST /webapi/me/invite          邀请链接（/?invite=code）
 //   GET /webapi/members, DELETE /webapi/members/:userId   成员（owner 移除→其密钥全部失效）
 //
 // CLI 密钥通道（Bearer 设备密钥；密钥继承用户的租户）：
@@ -224,6 +225,12 @@ const server = createServer(async (req, res) => {
       // 以下 /webapi 需要 cookie 会话
       const wu = sessionUser(req);
       if (!wu) return json(res, 401, { ok: false, error: '未登录或会话已过期' });
+
+      // 会话自省：门户刷新后用它恢复登录态（前端 ME 引导）
+      if (p === '/webapi/me' && req.method === 'GET') {
+        const tenant = store.db.prepare('SELECT name FROM tenants WHERE id=?').get(wu.tenant_id);
+        return json(res, 200, { ok: true, username: wu.username, role: wu.role, tenant_id: wu.tenant_id, tenant_name: tenant ? tenant.name : '' });
+      }
 
       if (p === '/webapi/logout' && req.method === 'POST') {
         const s = readSession(req);

@@ -178,7 +178,7 @@ async function renderKeys(main) {
     $('#k-list').innerHTML = rows.length ? '<table><tr><th>名称</th><th>密钥</th><th>创建</th><th>最近使用</th><th>状态</th><th></th></tr>' +
       rows.map((k) => `<tr><td>${esc(k.name)}</td><td class="meta">${esc(k.key_hint||'')}${k.revoked_at ? '' : k.revealable
         ? ` <button class="ghost" data-rid="${esc(k.id)}">复制</button>`
-        : ' <span class="meta" title="旧版创建，明文未保存，无法回显">不可回显</span>'}</td><td class="meta">${esc((k.created_at||'').slice(0,10))}</td>
+        : ` <button class="ghost" data-rid="${esc(k.id)}" data-legacy="1" title="旧版创建，明文未保存，无法回显">复制</button> <span class="meta">不可回显</span>`}</td><td class="meta">${esc((k.created_at||'').slice(0,10))}</td>
       <td class="meta">${k.last_used_at ? esc(k.last_used_at.slice(0,16)).replace('T',' ') : '从未'}</td>
       <td>${k.revoked_at ? '<span class="badge">已吊销</span>' : '<span class="badge" style="color:var(--ok)">有效</span>'}</td>
       <td>${k.revoked_at ? '' : `<button class="danger" data-id="${esc(k.id)}">吊销</button>`}</td></tr>`).join('') + '</table>'
@@ -189,6 +189,11 @@ async function renderKeys(main) {
       toast(rr.ok ? '已吊销' : (rr.error||'失败'), rr.ok); renderKeys(main);
     });
     $$('#k-list button[data-rid]').forEach((b) => b.onclick = async () => {
+      if (b.dataset.legacy) {
+        toast('该密钥创建于旧版本，明文未保存、无法复制。在上方输入名称点「新建密钥」，新密钥即可随时点「复制」取回', false);
+        $('#k-name') && $('#k-name').focus();
+        return;
+      }
       const rr = await api('/webapi/me/keys/' + b.dataset.rid + '/reveal');
       if (!rr.ok) { toast(rr.error || '回显失败', false); return; }
       const ok = await copyText(rr.api_key);

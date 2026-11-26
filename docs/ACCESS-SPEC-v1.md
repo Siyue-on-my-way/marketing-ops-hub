@@ -23,7 +23,7 @@ CLI（agent/hub）：用「自己的默认 API key」连接（注册时自动生
 
 - **workspace**：注册即创建自己的 workspace 并成为 **owner**；想加入别人的 workspace → 用对方生成的**邀请链接**注册（注册页自动带上目标 workspace）。
 - **API key 属于用户**（不是租户）：key 继承用户的租户与角色；每人注册即得 1 把默认 key，可创建多把分发（如给一台服务器专用）。
-- **写操作仍只在密钥通道**；Web 门户第一期 = 登录注册 + 素材浏览（只读）+ 密钥/成员/邀请管理。写端点（上传/claim/used）不开放给密码会话。
+- **门户素材管理面**（SIY-229 扩展）：密码会话可上传/编辑/删除/释放占用**本租户素材**（人工管理操作）；claim/used/knowledge 等设备协同端点仍只在密钥通道（hub 发布流程调用）。
 - 零第三方依赖不变：scrypt 哈希、HMAC 签名 cookie、手写 cookie 解析。
 
 ## 2. 数据模型（maitian-cloud，轻量迁移）
@@ -71,7 +71,11 @@ CREATE TABLE IF NOT EXISTS invites(
 | `POST /webapi/login` | — | `{username,password}` → cookie（HMAC 签名，HttpOnly/SameSite=Lax/7 天）；失败限流同 username+IP 5 次锁 10 分钟 |
 | `POST /webapi/logout` | cookie | 内存黑名单 |
 | `POST /webapi/password` | cookie | `{old,new}` 改密 |
-| `GET /webapi/materials?platform=&q=&limit=&offset=` | cookie | 本租户素材列表（title/type/tags/size/created_at/used_on/claim 状态） |
+| `GET /webapi/materials?platform=&q=&limit=&offset=` | cookie | 本租户素材列表（title/type/tags/size/note/sha256/created_at/used_on/claim 状态） |
+| `POST /webapi/materials` | cookie | **门户网页上传**（multipart：file + title + platform_tags(JSON 串) + note?/type?——type 缺省按扩展名推断 video|image|text）。与 `/v1` 同规则：sha256 去重、标签白名单校验、入库到本租户 |
+| `PATCH /webapi/materials/:id` | cookie | 编辑素材 `{title?/platform_tags?/note?}`（title 非空；tags ⊆ 白名单且 ≥1 个） |
+| `DELETE /webapi/materials/:id` | cookie | 删除素材：DB 行 + 磁盘目录（跨租户 404） |
+| `POST /webapi/materials/:id/release` | cookie | 释放占用锁（清理卡住的 30 分钟占用） |
 | `GET /webapi/materials/:id/file` | cookie | 302 → 复用 `/v1/files` 签名下载 |
 | `GET /webapi/me/keys` | cookie | 我的 key 列表（key_hint 明文前 6 位+…；新建时明文仅显示一次） |
 | `POST /webapi/me/keys` | cookie | `{name}` → `{api_key(仅此一次)}` |
@@ -127,6 +131,6 @@ hub 大屏前端静态资源引用为相对路径，挪 `/console/` 需在 front
 
 1. 零第三方依赖；明文 key/密码只在创建与注册响应中出现一次；存储一律哈希；日志脱敏（前 6 位）。
 2. `timingSafeEqual` 比较密码/签名；cookie HttpOnly+SameSite=Lax（HTTPS 后加 Secure）；register/login 限流+统一错误防枚举。
-3. 密码面=门户只读浏览+管理页；**写端点（上传/claim/used）永远只认密钥**——这是 D5 v4 的安全边界，不因注册开放而突破。
+3. 密码面=门户素材管理（上传/查看/编辑/删除/释放占用，仅限本租户）+密钥/成员/邀请管理；**设备协同端点（claim/used/knowledge）永远只认密钥**——这是 D5 v4 的安全边界。
 4. 越界信号：要做「邮箱/手机验证」「找回密码自助」「Web 端上传/写操作」→ 停，报告，等人类决策。
 5. 未实现 ≠ 假装实现；不卡住原则同主规格；交付说明含实测表格与未验证项清单。

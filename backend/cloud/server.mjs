@@ -1,13 +1,17 @@
 // server.mjs — maitian-cloud：素材库 API + 用户门户（ACCESS-SPEC v1.2，D5 v4）。
 // 零第三方依赖（node:http + node:sqlite + node:crypto，Node ≥22.5）。
 //
-// 门户（浏览器，密码会话，只读 + 管理页）：
+// 门户（浏览器，密码会话，查看 + 上传 + 管理）：
 //   GET  /                              门户单页（未登录=登录/注册；已登录=素材台/密钥/邀请/成员）
 //   POST /webapi/register               {username,password,invite_code?} 注册（invite 空=建 workspace 为 owner；有=加入）
 //   POST /webapi/login                  {username,password}
 //   GET  /webapi/me                     会话自省（门户刷新恢复登录态）
 //   POST /webapi/logout | /webapi/password {old,new}
 //   GET  /webapi/materials?q&platform&limit&offset      本租户素材（只读）
+//   POST /webapi/materials             门户网页上传（multipart：file + title/type?/platform_tags/note；sha256 去重）
+//   PATCH /webapi/materials/:id        编辑标题/平台标签/备注
+//   DELETE /webapi/materials/:id       删除素材（DB 行 + 磁盘文件）
+//   POST /webapi/materials/:id/release 释放占用（清理卡住的 30 分钟占用锁）
 //   GET  /webapi/materials/:id/file     302 → /v1/files 签名下载
 //   GET/POST /webapi/me/keys, DELETE /webapi/me/keys/:id  我的 API 密钥管理（加密存储可回显复制；旧版明文仅显示一次）
 //   GET  /webapi/me/keys/:id/reveal    回显密钥明文（复制按钮用）
@@ -18,10 +22,11 @@
 //   /v1/materials(+claim/release/used/download) /v1/journal /v1/knowledge(+versions) /v1/whoami /v1/endpoints /v1/ping
 //   兼容：旧共享 workspace_key（keys 表）映射 default 租户，行为不变。
 //
-// 安全边界（D5 v4）：密码会话只能看与管理；所有写端点（上传/claim/used）只认密钥。
+// 安全边界（D5 v4 + 门户素材管理 v1.3）：密码会话可上传/查看/管理本租户素材（上传/编辑/删除/释放占用）；
+// 设备协同端点（claim/used/knowledge）只认密钥——它们由 hub 在发布流程中调用，不属于人工管理面。
 import { createServer } from 'node:http';
 import { createHmac, createCipheriv, createDecipheriv, randomBytes, timingSafeEqual } from 'node:crypto';
-import { readFileSync, existsSync, statSync, writeFileSync, readdirSync, mkdirSync } from 'node:fs';
+import { readFileSync, existsSync, statSync, writeFileSync, readdirSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { dirname } from 'node:path';
@@ -112,6 +117,33 @@ function parseMultipart(buf, contentType) {
 }
 function findMaterial(id) { return store.db.prepare('SELECT * FROM materials WHERE id=?').get(id); }
 const nowIso = () => new Date().toISOString();
+
+// 按扩展名推断素材类型（门户上传未显式指定 type 时的兜底）
+function inferType(filename) {
+  const ext = (/\.([a-z0-9]+)$/i.exec(String(filename || ''))?.[1] || '').toLowerCase();
+  if (['mp4', 'mov', 'avi', 'mkv', 'webm', 'm4v', 'flv', 'wmv', 'ts', '3gp', 'mpeg', 'mpg'].includes(ext)) return 'video';
+  if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'heic', 'heif', 'svg', 'tif', 'tiff', 'ico'].includes(ext)) return 'image';
+  return 'text'; // txt/md/json/csv/pdf/srt 等文档与文案
+}
+
+// 上传一个素材到租户（门户 webapi 与 CLI /v1 共用；sha256 去重）
+function uploadMaterial(tenantId, filePart, meta) {
+  const type = ['video', 'image', 'text'].includes(meta.type) ? meta.type : inferType(filePart.filename);
+  const tags = Array.isArray(meta.platform_tags) ? meta.platform_tags
+    : String(meta.platform_tags || '').split(',').map((s) => s.trim()).filter(Boolean);
+  if (!meta.title || !String(meta.title).trim()) return { status: 400, body: { ok: false, error: 'title 必填' } };
+  if (!tags.length || tags.some((t) => !ALLOWED_TAGS.includes(t))) return { status: 400, body: { ok: false, error: 'platform_tags ⊆ ' + ALLOWED_TAGS.join(',') + ' 且至少 1 个' } };
+  const hash = sha256(filePart.body);
+  const dup = store.db.prepare('SELECT id, tenant_id FROM materials WHERE sha256=?').get(hash);
+  if (dup && dup.tenant_id === tenantId) return { status: 200, body: { id: dup.id, status: 'ready', dedup: true } };
+  const id = 'm' + randomBytes(6).toString('hex');
+  saveMaterialFile(store, id, filePart.filename, filePart.body);
+  store.db.prepare(
+    `INSERT INTO materials(id, title, type, platform_tags, note, source, size, sha256, status, created_at, tenant_id)
+     VALUES(?,?,?,?,?,?,?,?, 'ready', ?, ?)`
+  ).run(id, String(meta.title).trim(), type, JSON.stringify(tags), meta.note || null, meta.source || null, filePart.body.length, hash, nowIso(), tenantId);
+  return { status: 200, body: { id, status: 'ready' } };
+}
 
 // ---- 会话（HMAC 签名 cookie，无状态；logout 用内存黑名单兜底）----
 const loggedOut = new Set(); // nonce 黑名单（重启即清，可接受：会话本身 7 天）
@@ -279,7 +311,8 @@ const server = createServer(async (req, res) => {
         if (q) rows = rows.filter((r) => r.title.includes(q));
         return json(res, 200, { ok: true, items: rows.map((r) => ({
           id: r.id, title: r.title, type: r.type, tags: JSON.parse(r.platform_tags), size: r.size,
-          created_at: r.created_at, used_on: JSON.parse(r.used_on || '[]'), claimed_by: r.claimed_by, claimed_until: r.claimed_until,
+          note: r.note, sha256: r.sha256, created_at: r.created_at, used_on: JSON.parse(r.used_on || '[]'),
+          claimed_by: r.claimed_by, claimed_until: r.claimed_until,
         })) });
       }
       if ((m = p.match(/^\/webapi\/materials\/([^/]+)\/file$/)) && req.method === 'GET') {
@@ -289,6 +322,68 @@ const server = createServer(async (req, res) => {
         const sig = createHmac('sha256', signSecret()).update(`${row.id}.${exp}`).digest('hex');
         res.writeHead(302, { location: `/v1/files/${row.id}?exp=${exp}&sig=${sig}` });
         return res.end();
+      }
+      // 门户网页上传（与会话同权=本租户；multipart：file + title/platform_tags/note/type?）
+      if (p === '/webapi/materials' && req.method === 'POST') {
+        if (!rateLimit('upl:' + wu.id, 60, 60000)) return json(res, 429, { ok: false, error: '上传过于频繁，稍后再试' });
+        const body = await readBody(req);
+        const parts = parseMultipart(body, req.headers['content-type']);
+        if (!parts) return json(res, 400, { ok: false, error: '需要 multipart/form-data（file + 字段）' });
+        const filePart = parts.find((x) => x.filename !== undefined);
+        if (!filePart) return json(res, 400, { ok: false, error: '缺少文件' });
+        const meta = { title: '', type: '', platform_tags: [], note: '', source: 'portal' };
+        for (const part of parts) {
+          if (part.filename === undefined && meta[part.name] !== undefined) meta[part.name] = part.body.toString('utf8');
+        }
+        if (meta.platform_tags && typeof meta.platform_tags === 'string') {
+          try { const t = JSON.parse(meta.platform_tags); if (Array.isArray(t)) meta.platform_tags = t; } catch { /* 保留逗号分隔串，uploadMaterial 兼容 */ }
+        }
+        const r = uploadMaterial(wu.tenant_id, filePart, meta);
+        return json(res, r.status, r.body);
+      }
+      // 编辑素材元数据（标题/平台标签/备注）
+      if ((m = p.match(/^\/webapi\/materials\/([^/]+)$/)) && req.method === 'PATCH') {
+        const row = findMaterial(m[1]);
+        if (!row || row.tenant_id !== wu.tenant_id) return json(res, 404, { ok: false, error: 'material not found' });
+        const body = JSON.parse((await readBody(req, 1)).toString('utf8') || '{}');
+        const sets = [];
+        const vals = [];
+        if (body.title !== undefined) {
+          const title = String(body.title).trim();
+          if (!title) return json(res, 400, { ok: false, error: '标题不能为空' });
+          sets.push('title=?'); vals.push(title);
+        }
+        if (body.platform_tags !== undefined) {
+          const tags = Array.isArray(body.platform_tags) ? body.platform_tags : [];
+          if (!tags.length || tags.some((t) => !ALLOWED_TAGS.includes(t))) return json(res, 400, { ok: false, error: 'platform_tags ⊆ ' + ALLOWED_TAGS.join(',') + ' 且至少 1 个' });
+          sets.push('platform_tags=?'); vals.push(JSON.stringify(tags));
+        }
+        if (body.note !== undefined) { sets.push('note=?'); vals.push(body.note == null || body.note === '' ? null : String(body.note)); }
+        if (!sets.length) return json(res, 400, { ok: false, error: '没有要更新的字段（title/platform_tags/note）' });
+        store.db.prepare(`UPDATE materials SET ${sets.join(', ')} WHERE id=?`).run(...vals, m[1]);
+        const row2 = findMaterial(m[1]);
+        return json(res, 200, { ok: true, item: { id: row2.id, title: row2.title, type: row2.type, tags: JSON.parse(row2.platform_tags), note: row2.note, size: row2.size, created_at: row2.created_at } });
+      }
+      // 删除素材（DB 行 + 磁盘目录；租户内自由管理）
+      if ((m = p.match(/^\/webapi\/materials\/([^/]+)$/)) && req.method === 'DELETE') {
+        await readBody(req, 1);
+        const row = findMaterial(m[1]);
+        if (!row || row.tenant_id !== wu.tenant_id) return json(res, 404, { ok: false, error: 'material not found' });
+        store.db.prepare('DELETE FROM materials WHERE id=?').run(m[1]);
+        let diskRemoved = false;
+        try {
+          const dir = join(store.materialsDir, row.created_at.slice(0, 7), row.id);
+          if (existsSync(dir)) { rmSync(dir, { recursive: true, force: true }); diskRemoved = true; }
+        } catch { /* 磁盘清理失败不阻塞删除（DB 行已删，孤儿文件可人工清理） */ }
+        return json(res, 200, { ok: true, disk_removed: diskRemoved });
+      }
+      // 释放占用（清理卡住的占用锁；同人幂等）
+      if ((m = p.match(/^\/webapi\/materials\/([^/]+)\/release$/)) && req.method === 'POST') {
+        const row = findMaterial(m[1]);
+        if (!row || row.tenant_id !== wu.tenant_id) return json(res, 404, { ok: false, error: 'material not found' });
+        await readBody(req, 1);
+        store.db.prepare('UPDATE materials SET claimed_by=NULL, claimed_until=NULL WHERE id=?').run(m[1]);
+        return json(res, 200, { ok: true });
       }
       if (p === '/webapi/me/keys' && req.method === 'GET') {
         const keys = store.db.prepare('SELECT id, name, key_hint, created_at, last_used_at, expires_at, revoked_at, revoked_reason, key_enc IS NOT NULL AS revealable FROM api_keys WHERE user_id=? ORDER BY created_at').all(wu.id);
@@ -403,7 +498,11 @@ const server = createServer(async (req, res) => {
               { method: 'GET',  path: '/webapi/me',              desc: '会话自省（刷新恢复登录态）' },
               { method: 'POST', path: '/webapi/logout',          desc: '退出（作废当前会话）' },
               { method: 'POST', path: '/webapi/password',        desc: '改密 {old, new}' },
-              { method: 'GET',  path: '/webapi/materials',       desc: '本租户素材（只读，支持 q/platform/limit/offset）' },
+              { method: 'GET',  path: '/webapi/materials',       desc: '本租户素材（支持 q/platform/limit/offset；返回含 note/sha256/占用状态）' },
+              { method: 'POST', path: '/webapi/materials',       desc: '门户网页上传素材（multipart：file + title/platform_tags(JSON)/note?/type?——type 缺省按扩展名推断；sha256 去重）' },
+              { method: 'PATCH', path: '/webapi/materials/:id',  desc: '编辑素材 {title?/platform_tags?/note?}' },
+              { method: 'DELETE', path: '/webapi/materials/:id', desc: '删除素材（DB 行 + 磁盘文件）' },
+              { method: 'POST', path: '/webapi/materials/:id/release', desc: '释放占用锁（清理卡住的 30 分钟占用）' },
               { method: 'GET',  path: '/webapi/materials/:id/file', desc: '302 → 签名下载' },
               { method: 'GET',  path: '/webapi/me/keys',         desc: '我的 API 密钥列表（含 revealable 标记）' },
               { method: 'POST', path: '/webapi/me/keys',         desc: '新建密钥 {name}（明文仅显示一次，可随时在列表复制）' },
@@ -428,19 +527,8 @@ const server = createServer(async (req, res) => {
       if (!filePart || !metaPart) return json(res, 400, { ok: false, error: '缺少 file 或 meta 部分' });
       let meta;
       try { meta = JSON.parse(metaPart.body.toString('utf8')); } catch { return json(res, 400, { ok: false, error: 'meta 不是合法 JSON' }); }
-      if (!meta.title || !['video', 'image', 'text'].includes(meta.type)) return json(res, 400, { ok: false, error: 'meta.title 必填，meta.type ∈ video|image|text' });
-      const tags = Array.isArray(meta.platform_tags) ? meta.platform_tags : [];
-      if (!tags.length || tags.some((t) => !ALLOWED_TAGS.includes(t))) return json(res, 400, { ok: false, error: 'platform_tags ⊆ ' + ALLOWED_TAGS.join(',') + ' 且至少 1 个' });
-      const hash = sha256(filePart.body);
-      const dup = store.db.prepare('SELECT id, tenant_id FROM materials WHERE sha256=?').get(hash);
-      if (dup && dup.tenant_id === keyInfo.tenant_id) return json(res, 200, { id: dup.id, status: 'ready', dedup: true });
-      const id = 'm' + randomBytes(6).toString('hex');
-      saveMaterialFile(store, id, filePart.filename, filePart.body);
-      store.db.prepare(
-        `INSERT INTO materials(id, title, type, platform_tags, note, source, size, sha256, status, created_at, tenant_id)
-         VALUES(?,?,?,?,?,?,?,?, 'ready', ?, ?)`
-      ).run(id, String(meta.title), meta.type, JSON.stringify(tags), meta.note || null, meta.source || null, filePart.body.length, hash, nowIso(), keyInfo.tenant_id);
-      return json(res, 200, { id, status: 'ready' });
+      const r = uploadMaterial(keyInfo.tenant_id, filePart, meta);
+      return json(res, r.status, r.body);
     }
 
     if (p === '/v1/materials' && req.method === 'GET') {

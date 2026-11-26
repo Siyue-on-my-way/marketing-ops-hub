@@ -41,6 +41,32 @@
   td.kc { white-space:nowrap; }
   td.kc button { visibility:hidden; }
   tr:hover td.kc button, td.kc:hover button { visibility:visible; }
+  #f-list td.kc button { visibility:visible; }  /* 素材管理操作常显（管理页入口不可藏） */
+  /* ---- 素材库：上传与管理 ---- */
+  .dropzone { border:1px dashed var(--line); border-radius:8px; padding:18px 10px; text-align:center; color:var(--dim); cursor:pointer; transition:border-color .15s, background .15s; margin-bottom:10px; }
+  .dropzone:hover, .dropzone.drag { border-color:var(--accent); background:rgba(79,140,255,.06); color:var(--text); }
+  .chips { display:flex; gap:6px; flex-wrap:wrap; }
+  .chip { border:1px solid var(--line); background:var(--bg); color:var(--dim); border-radius:14px; padding:3px 12px; font-size:12px; cursor:pointer; user-select:none; }
+  .chip.on { border-color:var(--accent); color:var(--accent); background:rgba(79,140,255,.12); }
+  .chip.label { cursor:default; color:var(--dim); border-style:dashed; }
+  .u-file { display:flex; gap:8px; align-items:center; padding:5px 0; border-bottom:1px dashed var(--line); font-size:13px; }
+  .u-file input { margin:0; flex:1; max-width:340px; }
+  .u-file .meta { flex-shrink:0; }
+  .u-file button { flex-shrink:0; padding:3px 10px; font-size:12px; }
+  .progress { height:6px; background:var(--bg); border:1px solid var(--line); border-radius:4px; overflow:hidden; margin-top:8px; }
+  .progress > div { height:100%; width:0; background:var(--accent); transition:width .2s; }
+  .thumb { width:52px; height:36px; object-fit:cover; border-radius:4px; background:var(--bg); border:1px solid var(--line); flex-shrink:0; }
+  .thumb.ph { display:flex; align-items:center; justify-content:center; font-size:11px; color:var(--dim); }
+  .modal-mask { position:fixed; inset:0; background:rgba(0,0,0,.6); display:flex; align-items:flex-start; justify-content:center; padding:40px 16px; overflow-y:auto; z-index:50; }
+  .modal { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:18px; width:100%; max-width:640px; }
+  .modal h3 { margin:0 0 12px; font-size:15px; }
+  .modal .preview { margin-bottom:12px; max-height:340px; display:flex; justify-content:center; background:var(--bg); border:1px solid var(--line); border-radius:8px; overflow:hidden; }
+  .modal .preview img, .modal .preview video { max-width:100%; max-height:340px; object-fit:contain; }
+  .modal .preview pre { margin:0; padding:12px; width:100%; max-height:340px; overflow:auto; font-size:12px; color:var(--dim); white-space:pre-wrap; word-break:break-all; }
+  .modal dl { display:grid; grid-template-columns:76px 1fr; gap:4px 10px; font-size:13px; margin:0 0 12px; }
+  .modal dt { color:var(--dim); }
+  .modal dd { margin:0; word-break:break-all; }
+  textarea { width:100%; background:var(--bg); border:1px solid var(--line); color:var(--text); padding:8px 10px; border-radius:6px; font:inherit; resize:vertical; min-height:56px; margin-bottom:10px; }
 </style>
 </head>
 <body>
@@ -57,6 +83,15 @@ const $$ = (s, el=document) => Array.from(el.querySelectorAll(s));
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const INVITE = new URLSearchParams(location.search).get('invite') || '';
 let ME = null;
+const PLATS = [['common','common'],['xhs','小红书'],['douyin','抖音'],['tiktok','TikTok'],['yt','YouTube'],['bili','B站'],['x','X'],['xianyu','闲鱼']];
+const TYPE_NAMES = { video:'视频', image:'图片', text:'文案' };
+const extType = (name) => {
+  const ext = (/\.([a-z0-9]+)$/i.exec(name || '')?.[1] || '').toLowerCase();
+  if (['mp4','mov','avi','mkv','webm','m4v','flv','wmv','ts','3gp','mpeg','mpg'].includes(ext)) return 'video';
+  if (['jpg','jpeg','png','gif','webp','bmp','heic','heif','svg','tif','tiff','ico'].includes(ext)) return 'image';
+  return 'text';
+};
+const fmtSize = (n) => n >= 1024 * 1024 * 1024 ? (n / 1024 / 1024 / 1024).toFixed(2) + 'GB' : n >= 1024 * 1024 ? (n / 1024 / 1024).toFixed(2) + 'MB' : (n / 1024).toFixed(1) + 'KB';
 
 function toast(msg, ok=true) { const t=$('#toast'); t.textContent=msg; t.style.borderColor=ok?'var(--ok)':'var(--bad)'; t.style.display='block'; setTimeout(()=>t.style.display='none',4000); }
 // 复制到剪贴板：HTTP 环境无 navigator.clipboard，回退 execCommand
@@ -150,28 +185,270 @@ function renderTab(t) {
   else renderMembers(main);
 }
 
-async function renderMaterials(main) {
-  main.innerHTML = '<div class="panel"><h2>素材库</h2><div class="row"><input id="f-q" placeholder="标题搜索…" style="max-width:260px"><select id="f-p" style="max-width:160px"></select><button id="f-go">查询</button></div><div id="f-list" class="empty">加载中…</div></div>';
-  const sel = $('#f-p');
-  for (const [code, name] of [['','全部平台'],['common','common'],['xhs','小红书'],['douyin','抖音'],['tiktok','TikTok'],['yt','YouTube'],['bili','B站'],['x','X'],['xianyu','闲鱼']]) {
-    const o = document.createElement('option'); o.value = code; o.textContent = name || '全部平台'; sel.appendChild(o);
-  }
-  const load = async () => {
-    const q = $('#f-q').value.trim(), p = $('#f-p').value;
-    const r = await api(`/webapi/materials?limit=50${p?`&platform=${p}`:''}${q?`&q=${encodeURIComponent(q)}`:''}`);
-    const list = $('#f-list');
-    if (!r.ok) { list.className='err'; list.textContent = r.error || '加载失败'; return; }
-    if (!r.items.length) { list.className='empty'; list.textContent = '暂无素材（用 hub 或 API 上传后这里可见）'; return; }
-    list.className = '';
-    list.innerHTML = '<table><tr><th>标题</th><th>类型</th><th>标签</th><th>大小</th><th>时间</th><th>使用记录</th><th>占用</th><th></th></tr>' +
-      r.items.map((m) => `<tr><td>${esc(m.title)}</td><td><span class="badge">${esc(m.type)}</span></td><td>${m.tags.map((t)=>`<span class="badge">${esc(t)}</span>`).join('')}</td>
-      <td class="meta">${(m.size/1024/1024).toFixed(2)}MB</td><td class="meta">${esc((m.created_at||'').slice(0,10))}</td>
-      <td class="meta">${m.used_on.length ? m.used_on.map((u)=>`${esc(u.platform)}${u.url?' ✓':''}`).join('、') : '—'}</td>
-      <td class="meta">${m.claimed_until && new Date(m.claimed_until) > new Date() ? '被 '+esc(m.claimed_by||'')+' 占用' : '空闲'}</td>
-      <td><a href="/webapi/materials/${esc(m.id)}/file" target="_blank"><button class="ghost">下载</button></a></td></tr>`).join('');
+// ---------- 素材库：网页上传 / 查看 / 管理 ----------
+function chipRow(name, selected = []) {
+  return `<div class="chips" data-chips="${name}">` + PLATS.map(([v, n]) =>
+    `<span class="chip ${selected.includes(v) ? 'on' : ''}" data-v="${v}">${esc(n)}</span>`).join('') + '</div>';
+}
+function chipVals(el) { return $$('.chip.on', el).map((c) => c.dataset.v); }
+function bindChips(el) { $$('.chip', el).forEach((c) => c.onclick = () => c.classList.toggle('on')); }
+
+function openModal(html) {
+  closeModal();
+  const mask = document.createElement('div');
+  mask.className = 'modal-mask'; mask.id = 'modal';
+  mask.innerHTML = `<div class="modal">${html}</div>`;
+  mask.onclick = (e) => { if (e.target === mask) closeModal(); };
+  document.body.appendChild(mask);
+  return mask;
+}
+function closeModal() { const el = $('#modal'); if (el) el.remove(); }
+
+function matFileUrl(id) { return `/webapi/materials/${esc(id)}/file`; }
+
+function previewHtml(m, fileUrl) {
+  if (m.type === 'image') return `<img src="${fileUrl}" alt="${esc(m.title)}">`;
+  if (m.type === 'video') return `<video src="${fileUrl}" controls preload="metadata"></video>`;
+  if (m.type === 'text') return `<pre id="pv-text">加载中…</pre>`;
+  return `<div class="empty">暂不支持预览，请下载查看</div>`;
+}
+async function loadTextPreview(fileUrl) {
+  try {
+    const t = await (await fetch(fileUrl)).text();
+    const el = $('#pv-text');
+    if (el) el.textContent = t.length > 4000 ? t.slice(0, 4000) + '\n…（已截断，完整内容请下载）' : t;
+  } catch { const el = $('#pv-text'); if (el) el.textContent = '预览加载失败，请下载查看'; }
+}
+
+function thumbHtml(m) {
+  const fileUrl = matFileUrl(m.id);
+  if (m.type === 'image') return `<img class="thumb" src="${fileUrl}" loading="lazy" alt="">`;
+  if (m.type === 'video') return `<div class="thumb ph">▶</div>`;
+  return `<div class="thumb ph">${esc((TYPE_NAMES[m.type] || m.type || '?').slice(0, 2))}</div>`;
+}
+
+function renderDetail(m) {
+  const fileUrl = matFileUrl(m.id);
+  const claimed = m.claimed_until && new Date(m.claimed_until) > new Date();
+  const usedRows = (m.used_on || []).map((u) =>
+    `<div class="meta">${esc(u.platform)} · ${esc((u.ts || '').slice(0, 16)).replace('T', ' ')}${u.url ? ` · <a class="link" href="${esc(u.url)}" target="_blank" rel="noopener">链接</a>` : ''}${u.account_id ? ' · ' + esc(u.account_id) : ''}</div>`).join('') || '<div class="meta">尚未使用</div>';
+  openModal(`
+    <h3>${esc(m.title)}</h3>
+    <div class="preview" id="pv-box">${previewHtml(m, fileUrl)}</div>
+    <dl>
+      <dt>类型</dt><dd><span class="badge">${esc(TYPE_NAMES[m.type] || m.type)}</span></dd>
+      <dt>平台标签</dt><dd>${m.tags.map((t) => `<span class="badge">${esc(t)}</span>`).join('')}</dd>
+      <dt>大小</dt><dd class="meta">${fmtSize(m.size)}</dd>
+      <dt>上传时间</dt><dd class="meta">${esc((m.created_at || '').slice(0, 19)).replace('T', ' ')}</dd>
+      <dt>sha256</dt><dd class="meta" title="${esc(m.sha256 || '')}">${esc((m.sha256 || '').slice(0, 16))}…</dd>
+      <dt>备注</dt><dd>${m.note ? esc(m.note) : '<span class="meta">—</span>'}</dd>
+      <dt>占用</dt><dd class="meta">${claimed ? '被 ' + esc(m.claimed_by || '') + ' 占用（' + esc(m.claimed_until.slice(0, 16)).replace('T', ' ') + ' 到期）' : '空闲'}</dd>
+      <dt>使用记录</dt><dd>${usedRows}</dd>
+    </dl>
+    <div class="row">
+      <a href="${fileUrl}" target="_blank"><button>下载</button></a>
+      ${claimed ? `<button class="ghost" id="d-release">释放占用</button>` : ''}
+      <button class="ghost" id="d-edit">编辑</button>
+      <button class="danger" id="d-del">删除</button>
+      <button class="ghost" id="d-close">关闭</button>
+    </div>`);
+  if (m.type === 'text') loadTextPreview(fileUrl);
+  $('#d-close').onclick = closeModal;
+  if (claimed) $('#d-release').onclick = async () => {
+    const r = await api(`/webapi/materials/${m.id}/release`, { method: 'POST', body: {} });
+    toast(r.ok ? '已释放占用' : (r.error || '失败'), r.ok);
+    if (r.ok) { closeModal(); renderMaterials($('#main')); }
   };
-  $('#f-go').onclick = load; $('#f-q').onkeydown = (e) => { if (e.key === 'Enter') load(); };
-  load();
+  $('#d-edit').onclick = () => renderEdit(m);
+  $('#d-del').onclick = () => delMaterial(m, () => { closeModal(); renderMaterials($('#main')); });
+}
+
+function renderEdit(m) {
+  openModal(`
+    <h3>编辑素材</h3>
+    <div class="err" id="e-err"></div>
+    <input id="e-title" value="${esc(m.title)}" placeholder="标题">
+    <div class="meta" style="margin-bottom:4px">平台标签（可发平台；common = 全平台）</div>
+    ${chipRow('edit', m.tags)}
+    <div style="margin-top:10px"><textarea id="e-note" placeholder="备注（选填）">${esc(m.note || '')}</textarea></div>
+    <div class="row"><button id="e-save">保存</button><button class="ghost" id="e-cancel">取消</button></div>`);
+  bindChips($('[data-chips="edit"]'));
+  $('#e-cancel').onclick = closeModal;
+  $('#e-save').onclick = async () => {
+    const title = $('#e-title').value.trim();
+    const tags = chipVals($('[data-chips="edit"]'));
+    if (!title) { $('#e-err').textContent = '标题不能为空'; return; }
+    if (!tags.length) { $('#e-err').textContent = '请至少选择一个平台标签'; return; }
+    const r = await api(`/webapi/materials/${m.id}`, { method: 'PATCH', body: { title, platform_tags: tags, note: $('#e-note').value.trim() } });
+    if (!r.ok) { $('#e-err').textContent = r.error || '保存失败'; return; }
+    toast('已保存'); closeModal(); renderMaterials($('#main'));
+  };
+}
+
+function delMaterial(m, after) {
+  if (!confirm(`删除素材「${m.title}」？\n删除后下载链接立即失效（已发布的内容不受影响，hub 本地缓存不回收）。`)) return;
+  api(`/webapi/materials/${m.id}`, { method: 'DELETE', body: {} }).then((r) => {
+    toast(r.ok ? '已删除' : (r.error || '删除失败'), r.ok);
+    if (r.ok && after) after();
+  });
+}
+
+async function renderMaterials(main) {
+  const typeInfer = (f) => extType(f.name);
+  let picked = []; // {file, title}
+  main.innerHTML = `
+    <div class="panel">
+      <h2>上传素材</h2>
+      <div class="dropzone" id="u-drop">点击选择文件，或把文件拖到这里（可多选；≤500MB/个）</div>
+      <input type="file" id="u-file" multiple style="display:none">
+      <div id="u-files"></div>
+      <div class="meta" style="margin:8px 0 4px">平台标签（可发平台；common = 全平台可用）</div>
+      ${chipRow('upl', ['common'])}
+      <div style="margin-top:10px"><input id="u-note" placeholder="备注（选填，本批共用）" style="margin-bottom:0"></div>
+      <div class="row" style="margin-top:10px">
+        <button id="u-go" disabled>开始上传</button>
+        <span class="meta" id="u-state"></span>
+      </div>
+      <div class="progress" id="u-bar" style="display:none"><div></div></div>
+      <div class="okmsg" id="u-out"></div>
+    </div>
+    <div class="panel">
+      <h2>素材库</h2>
+      <div class="row"><input id="f-q" placeholder="标题搜索…" style="max-width:260px"><select id="f-p" style="max-width:160px"></select><button id="f-go">查询</button><button class="ghost" id="f-refresh">刷新</button></div>
+      <div id="f-list" class="empty">加载中…</div>
+      <div class="row" style="margin-top:10px;justify-content:center"><button class="ghost" id="f-more" style="display:none">加载更多</button></div>
+    </div>`;
+  // 平台筛选下拉
+  const sel = $('#f-p');
+  for (const [code, name] of [['','全部平台'], ...PLATS]) {
+    const o = document.createElement('option'); o.value = code; o.textContent = code ? name : '全部平台'; sel.appendChild(o);
+  }
+  // ---- 上传交互 ----
+  bindChips($('[data-chips="upl"]'));
+  const drop = $('#u-drop'), fileInput = $('#u-file');
+  const drawPicked = () => {
+    $('#u-files').innerHTML = picked.map((p, i) => `
+      <div class="u-file">
+        <span class="badge">${esc(TYPE_NAMES[p.type])}</span>
+        <input data-ti="${i}" value="${esc(p.title)}" title="标题（上传后可再编辑）">
+        <span class="meta">${fmtSize(p.file.size)}</span>
+        <button class="ghost" data-rm="${i}">移除</button>
+      </div>`).join('');
+    $('#u-go').disabled = !picked.length;
+    $$('#u-files input[data-ti]').forEach((inp) => inp.oninput = () => { picked[Number(inp.dataset.ti)].title = inp.value; });
+    $$('#u-files button[data-rm]').forEach((b) => b.onclick = () => { picked.splice(Number(b.dataset.rm), 1); drawPicked(); });
+  };
+  const addFiles = (list) => {
+    for (const f of list) {
+      if (f.size > 500 * 1024 * 1024) { toast(`「${f.name}」超过 500MB，已跳过`, false); continue; }
+      picked.push({ file: f, title: f.name.replace(/\.[^.]+$/, '') || f.name, type: typeInfer(f) });
+    }
+    drawPicked();
+  };
+  drop.onclick = () => fileInput.click();
+  fileInput.onchange = () => { addFiles(fileInput.files); fileInput.value = ''; };
+  drop.ondragover = (e) => { e.preventDefault(); drop.classList.add('drag'); };
+  drop.ondragleave = () => drop.classList.remove('drag');
+  drop.ondrop = (e) => { e.preventDefault(); drop.classList.remove('drag'); addFiles(e.dataTransfer.files); };
+
+  const bar = $('#u-bar'), barIn = bar.firstElementChild;
+  const xhrUpload = (p, tags, note) => new Promise((resolve) => {
+    const fd = new FormData();
+    fd.append('file', p.file, p.file.name);
+    fd.append('title', p.title);
+    fd.append('type', p.type);
+    fd.append('platform_tags', JSON.stringify(tags));
+    if (note) fd.append('note', note);
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', '/webapi/materials');
+    xhr.upload.onprogress = (e) => { if (e.lengthComputable) barIn.style.width = Math.round((e.loaded / e.total) * 100) + '%'; };
+    xhr.onload = () => { let j = {}; try { j = JSON.parse(xhr.responseText); } catch {} resolve(j); };
+    xhr.onerror = () => resolve({ ok: false, error: '网络错误' });
+    xhr.send(fd);
+  });
+
+  $('#u-go').onclick = async () => {
+    const tags = chipVals($('[data-chips="upl"]'));
+    if (!tags.length) { toast('请至少选择一个平台标签', false); return; }
+    if (picked.some((p) => !p.title.trim())) { toast('有文件的标题为空', false); return; }
+    const note = $('#u-note').value.trim();
+    const btn = $('#u-go'); btn.disabled = true;
+    bar.style.display = 'block';
+    const results = [];
+    for (let i = 0; i < picked.length; i++) {
+      $('#u-state').textContent = `上传中 ${i + 1}/${picked.length}：${picked[i].file.name}`;
+      barIn.style.width = '0';
+      results.push(await xhrUpload(picked[i], tags, note));
+    }
+    bar.style.display = 'none'; barIn.style.width = '0';
+    $('#u-state').textContent = '';
+    btn.disabled = false;
+    const okCount = results.filter((r) => r.ok && !r.dedup).length;
+    const dupCount = results.filter((r) => r.ok && r.dedup).length;
+    const bad = results.filter((r) => !r.ok);
+    if (bad.length) $('#u-out').textContent = bad.map((b) => b.error || '上传失败').join('；');
+    else $('#u-out').textContent = '';
+    let msg = `上传完成：成功 ${okCount} 条` + (dupCount ? `，去重跳过 ${dupCount} 条（相同文件已存在）` : '');
+    toast(msg + (bad.length ? `；失败 ${bad.length} 条` : ''), !bad.length);
+    picked = []; drawPicked();
+    load();
+  };
+
+  // ---- 列表（分页 + 操作） ----
+  let offset = 0, allRows = [];
+  const rowHtml = (mt) => {
+    const claimed = mt.claimed_until && new Date(mt.claimed_until) > new Date();
+    return `<tr data-id="${esc(mt.id)}">
+      <td>${thumbHtml(mt)}</td>
+      <td><span class="link mat-title">${esc(mt.title)}</span></td>
+      <td><span class="badge">${esc(TYPE_NAMES[mt.type] || mt.type)}</span></td>
+      <td>${mt.tags.map((t) => `<span class="badge">${esc(t)}</span>`).join('')}</td>
+      <td class="meta">${fmtSize(mt.size)}</td>
+      <td class="meta">${esc((mt.created_at || '').slice(0, 10))}</td>
+      <td class="meta">${(mt.used_on || []).length ? mt.used_on.map((u2) => `${esc(u2.platform)}${u2.url ? ' ✓' : ''}`).join('、') : '—'}</td>
+      <td class="meta">${claimed ? '被 ' + esc(mt.claimed_by || '') + ' 占用' : '空闲'}</td>
+      <td class="kc" style="white-space:nowrap">
+        <button class="ghost" data-act="view">查看</button>
+        <button class="ghost" data-act="edit">编辑</button>
+        <a href="${matFileUrl(mt.id)}" target="_blank"><button class="ghost">下载</button></a>
+        <button class="danger" data-act="del">删除</button>
+      </td></tr>`;
+  };
+  const drawTable = () => {
+    const list = $('#f-list');
+    list.innerHTML = '<table><tr><th></th><th>标题</th><th>类型</th><th>标签</th><th>大小</th><th>时间</th><th>使用记录</th><th>占用</th><th></th></tr>' +
+      allRows.map(rowHtml).join('') + '</table>';
+    const byId = Object.fromEntries(allRows.map((mt) => [mt.id, mt]));
+    $$('#f-list tr[data-id]').forEach((tr) => {
+      const mt = byId[tr.dataset.id];
+      if (!mt) return;
+      $('.mat-title', tr).onclick = () => renderDetail(mt);
+      $(`[data-act="view"]`, tr).onclick = () => renderDetail(mt);
+      $(`[data-act="edit"]`, tr).onclick = () => renderEdit(mt);
+      $(`[data-act="del"]`, tr).onclick = () => delMaterial(mt, () => load());
+    });
+    $('#f-more').style.display = allRows.length >= offset + 50 && lastFetch === 50 ? 'block' : 'none';
+  };
+  let lastFetch = 0;
+  const load = async (append = false) => {
+    const q = $('#f-q').value.trim(), p = sel.value;
+    if (!append) { offset = 0; allRows = []; }
+    const r = await api(`/webapi/materials?limit=50&offset=${offset}${p ? `&platform=${p}` : ''}${q ? `&q=${encodeURIComponent(q)}` : ''}`);
+    const list = $('#f-list');
+    if (!r.ok) { list.className = 'err'; list.textContent = r.error || '加载失败'; return; }
+    const rows = r.items || [];
+    lastFetch = rows.length;
+    allRows = allRows.concat(rows);
+    if (!allRows.length) { list.className = 'empty'; list.textContent = '暂无素材——在上方选择文件即可直接上传，或用 hub / API 上传后这里可见'; $('#f-more').style.display = 'none'; return; }
+    list.className = '';
+    drawTable();
+  };
+  $('#f-go').onclick = () => load();
+  $('#f-refresh').onclick = () => load();
+  $('#f-q').onkeydown = (e) => { if (e.key === 'Enter') load(); };
+  sel.onchange = () => load();
+  $('#f-more').onclick = () => { offset += 50; load(true); };
+  await load();
 }
 
 async function renderKeys(main) {

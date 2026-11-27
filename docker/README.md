@@ -33,6 +33,8 @@ docker compose logs -f maitian-cloud # 云素材库日志
 docker compose restart backend       # 改 volumes/marketing-ops-hub/config.json / .env 后生效
 docker compose down                  # 停止（数据保留在 volumes/）
 docker compose up -d --build         # 改代码后重建
+# 注意：重建/重建创建 backend 或 maitian-cloud 后，其容器 IP 会变，nginx 有 DNS 缓存，
+# 需 restart nginx 一次，否则网关 502：docker compose restart nginx
 ```
 
 ## 云素材库拆分部署（生产推荐）

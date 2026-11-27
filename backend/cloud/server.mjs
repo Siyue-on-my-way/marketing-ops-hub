@@ -461,9 +461,27 @@ const server = createServer(async (req, res) => {
     touchKey(store.db, keyInfo.id);
 
     if (p === '/v1/whoami' && req.method === 'GET') {
-      const user = keyInfo.user_id ? store.db.prepare('SELECT username, role FROM users WHERE id=?').get(keyInfo.user_id) : null;
-      const tenant = store.db.prepare('SELECT name FROM tenants WHERE id=?').get(keyInfo.tenant_id);
-      return json(res, 200, { ok: true, tenant_id: keyInfo.tenant_id, tenant_name: tenant ? tenant.name : '', role: keyInfo.kind === 'legacy' ? 'admin' : (user ? user.role : 'member'), user: user ? user.username : 'legacy', key_name: keyInfo.name });
+      // CLI 用任意有效密钥查询：当前用户/租户/密钥/素材统计全档案
+      const user = keyInfo.user_id ? store.db.prepare('SELECT username, display_name, role, created_at, last_login_at FROM users WHERE id=?').get(keyInfo.user_id) : null;
+      const tenant = store.db.prepare('SELECT id, name, owner_user_id, created_at FROM tenants WHERE id=?').get(keyInfo.tenant_id);
+      const keyRow = keyInfo.id ? store.db.prepare('SELECT name, key_hint, created_at, last_used_at, expires_at FROM api_keys WHERE id=?').get(keyInfo.id) : null;
+      const memberCount = store.db.prepare('SELECT COUNT(*) n FROM users WHERE tenant_id=? AND revoked_at IS NULL').get(keyInfo.tenant_id).n;
+      const matTotal = store.db.prepare(`SELECT COUNT(*) n FROM materials WHERE tenant_id=? AND status='ready'`).get(keyInfo.tenant_id).n;
+      const matUsed = store.db.prepare(`SELECT COUNT(*) n FROM materials WHERE tenant_id=? AND status='ready' AND used_on != '[]'`).get(keyInfo.tenant_id).n;
+      const matBusy = store.db.prepare(`SELECT COUNT(*) n FROM materials WHERE tenant_id=? AND claimed_until IS NOT NULL AND claimed_until > ?`).get(keyInfo.tenant_id, nowIso()).n;
+      const role = keyInfo.kind === 'legacy' ? 'admin' : (user ? user.role : 'member');
+      return json(res, 200, {
+        ok: true,
+        // 兼容旧字段（hub join 等已消费）
+        tenant_id: keyInfo.tenant_id, tenant_name: tenant ? tenant.name : '', role, user: user ? user.username : 'legacy', key_name: keyInfo.name,
+        user_info: user ? { username: user.username, display_name: user.display_name, role: user.role, created_at: user.created_at, last_login_at: user.last_login_at } : null,
+        tenant_info: tenant ? {
+          id: tenant.id, name: tenant.name, created_at: tenant.created_at,
+          member_count: memberCount, is_owner: tenant.owner_user_id != null && tenant.owner_user_id === keyInfo.user_id,
+        } : null,
+        key_info: keyRow || { name: keyInfo.name },
+        stats: { materials_total: matTotal, materials_used: matUsed, materials_claimed: matBusy, members: memberCount },
+      });
     }
 
     // 接口发现：CLI 用任意有效密钥查询本服务全部开放端点（自描述目录，随代码同步更新）
@@ -476,9 +494,9 @@ const server = createServer(async (req, res) => {
             endpoints: [
               { method: 'GET',  path: '/v1/ping',                          desc: '健康检查（免鉴权）' },
               { method: 'GET',  path: '/v1/endpoints',                     desc: '本目录：查询全部开放接口' },
-              { method: 'GET',  path: '/v1/whoami',                        desc: '当前密钥归属（租户/角色/密钥名）' },
+              { method: 'GET',  path: '/v1/whoami',                        desc: '当前密钥全档案：用户/租户/成员数/密钥信息/素材统计（CLI: hub whoami）' },
               { method: 'POST', path: '/v1/materials',                     desc: '上传素材（multipart：file + meta JSON {title,type:video|image|text,platform_tags[],note?,source?}；sha256 去重）' },
-              { method: 'GET',  path: '/v1/materials?platform=&limit=',    desc: '素材列表（platform ∈ common,xhs,douyin,tiktok,yt,bili,x,xianyu；含 common）' },
+              { method: 'GET',  path: '/v1/materials?platform=&limit=',    desc: '素材列表（platform ∈ common,xhs,douyin,tiktok,yt,bili,x,xianyu；含 common；CLI: hub materials）' },
               { method: 'POST', path: '/v1/materials/:id/claim',           desc: '占用锁 {device}（30 分钟自动释放，防两人发同一素材）' },
               { method: 'POST', path: '/v1/materials/:id/release',         desc: '释放占用' },
               { method: 'POST', path: '/v1/materials/:id/used',            desc: '发布成功回写 {platform, account_id?, url?}' },

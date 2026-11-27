@@ -8,10 +8,18 @@ import { loadConfig, credentialsPath } from './config.mjs';
 import { nowIso } from './util.mjs';
 import * as planner from './planner.mjs';
 import * as evolution from './evolution.mjs';
+import * as cloud from './cloud-client.mjs';
 import { startServer } from './server.mjs';
 
 const cfg = loadConfig();
 const db = openDb(cfg.paths.db);
+
+/** 读取 join 时写入的本机凭证；未入职返回 null */
+function loadJoinedKey() {
+  const p = credentialsPath();
+  if (!existsSync(p)) return null;
+  try { return JSON.parse(readFileSync(p, 'utf8')); } catch { return null; }
+}
 
 function print(result) {
   console.log(JSON.stringify(result, null, 2));
@@ -33,6 +41,8 @@ function usage() {
       'node src/hub.mjs knowledge sync [--platform <p>] | push <platform> | status',
       'node src/hub.mjs engage feedback <engagement_id>   # 回路③反馈采集（本期占位）',
       'node src/hub.mjs join <你的API密钥>            # 从门户「密钥管理」复制默认密钥，一次性写入本机凭证',
+      'node src/hub.mjs whoami                        # 用已存 API key 查询当前用户/租户/密钥/素材统计',
+      'node src/hub.mjs materials [--platform xhs] [--limit 20]   # 列出云端素材（可按平台过滤）',
       'node src/hub.mjs daemon | web | serve',
     ],
   });
@@ -140,6 +150,19 @@ async function main() {
       writeFileSync(credPath, JSON.stringify({ api_key: key, tenant_id: who.tenant_id, tenant_name: who.tenant_name, user: who.user, joined_at: nowIso() }, null, 2) + '\n');
       try { chmodSync(credPath, 0o600); } catch { /* Windows 忽略 */ }
       return print({ ok: true, tenant_id: who.tenant_id, tenant_name: who.tenant_name, user: who.user, key_name: who.key_name, credentials: credPath, note: '已写入本机凭证（0600）；hub doctor 可复查' });
+    }
+    // ---------- CLI 凭证通道：用已存 API key 查用户档案 / 云端素材 ----------
+    case 'whoami': {
+      const cred = loadJoinedKey();
+      if (!cred || !cred.api_key) return print({ ok: false, error: '尚未入职：先执行 hub join <API密钥>（登录门户 →「密钥管理」复制默认密钥）' });
+      return print(await cloud.api(cfg, cred.api_key, 'GET', '/v1/whoami'));
+    }
+    case 'materials': {
+      const cred = loadJoinedKey();
+      if (!cred || !cred.api_key) return print({ ok: false, error: '尚未入职：先执行 hub join <API密钥>（登录门户 →「密钥管理」复制默认密钥）' });
+      const platform = argFlag('platform') || '';
+      const limit = Math.max(1, Math.min(100, Number(argFlag('limit') || 20)));
+      return print(await cloud.listMaterials(db, cfg, cred.api_key, platform, limit));
     }
     // ---------- 自进化（EVOLUTION-SPEC）：proposals 唯一进化入口 ----------
     case 'strategy': {

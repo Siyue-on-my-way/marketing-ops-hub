@@ -488,6 +488,7 @@ const server = createServer(async (req, res) => {
     if (p === '/v1/endpoints' && req.method === 'GET') {
       return json(res, 200, {
         ok: true, service: 'maitian-cloud', now: nowIso(),
+        related_cli_catalog: '本机 hub 命令目录：node src/hub.mjs tools（机器可读；本响应只列 HTTP 接口）',
         channels: {
           cli: {
             auth: 'Authorization: Bearer <api_key>（门户「密钥管理」页新建，或注册时发放的默认密钥）',

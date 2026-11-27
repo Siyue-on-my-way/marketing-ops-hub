@@ -24,27 +24,62 @@ function loadJoinedKey() {
 function print(result) {
   console.log(JSON.stringify(result, null, 2));
 }
+// ---------- 机器可读命令目录（MCP tools/list 同思路）：hub tools / hub help ----------
+const CATALOG = [
+  { name: 'accounts list', args: '', desc: '列出本机已录入平台账号（id/platform/昵称/status/登录态/配额/trust_score）' },
+  { name: 'accounts add', args: '<platform> <name> [--mature] [--auto-publish] [--device <d>]', desc: '录入平台账号（platform ∈ xhs,douyin,tiktok,yt,bili,x,xianyu）；--mature=老号跳过14天冷启动；--auto-publish=发布走 auto 模式' },
+  { name: 'accounts set', args: '<id> --auto-publish on|off', desc: '切换账号自动发布模式' },
+  { name: 'accounts login', args: '<account_id>', desc: '弹出 ego 浏览器登录该账号（用户手机扫码，等最多10分钟）' },
+  { name: 'accounts remove', args: '<id>', desc: '移除平台账号' },
+  { name: 'plan', args: '<material_id> --platforms xhs,douyin --accounts <id,id> [--at "YYYY-MM-DD HH:mm"] --payload-file <payload.json>', desc: '建发布任务（payload=AI 改写后的各平台文案 JSON，先落库）' },
+  { name: 'run', args: '[--due]', desc: '执行到期任务：登录预检→四道闸门→填写→截图→（auto）自动发布+回读 /（confirm）停下待人点发布' },
+  { name: 'confirm', args: '<post_id>', desc: 'confirm 模式专用：人已亲手点发布，回读确认→published' },
+  { name: 'interact', args: '<account_id> --plan <plan.json>', desc: '执行互动计划（点赞/评论/私聊/话题回复；auto 直行，confirm 待 approve）' },
+  { name: 'approve', args: '<engagement_id | batch:today>', desc: '人审通过互动（仅 interact_mode=confirm 时需要）' },
+  { name: 'reject', args: '<engagement_id>', desc: '驳回互动草拟' },
+  { name: 'health', args: '', desc: '账号健康总览（trust_score/配额用量/风控事件/登录态）' },
+  { name: 'review', args: '<post_id> [days=7]', desc: '复盘卡片（第1/3/7天数据+与上期同龄对比）' },
+  { name: 'doctor', args: '', desc: '环境自检（ego/hub/各账号登录态/云端连通）→ JSON' },
+  { name: 'mode', args: '<account_id> [--publish auto|confirm] [--interact auto|confirm]', desc: '查看/切换账号级自动化模式（默认 auto）' },
+  { name: 'join', args: '<API密钥>', desc: '门户「密钥管理」复制密钥，一次性绑定本机到 workspace' },
+  { name: 'whoami', args: '', desc: '用已存 API key 查询当前用户/租户/密钥/素材统计' },
+  { name: 'materials', args: '[--platform p] [--limit n]', desc: '列出云端素材（云不可达自动降级本地缓存）' },
+  { name: 'strategy show', args: '<platform>', desc: '查看平台当前策略库版本' },
+  { name: 'strategy history', args: '<platform>', desc: '策略库历史版本' },
+  { name: 'proposal add', args: '--kind strategy|knowledge|quota|engage --platform <p> [--account <id>] --payload-file <f> [--basis dom_snapshot|screenshot]', desc: '提交进化提案（唯一进化入口，人审后生效）' },
+  { name: 'proposal list', args: '[status]', desc: '列出进化提案' },
+  { name: 'proposal approve', args: '<id>', desc: '批准并落地进化提案' },
+  { name: 'proposal reject', args: '<id>', desc: '驳回进化提案' },
+  { name: 'knowledge sync', args: '[--platform p]', desc: '从云端拉取最新知识包' },
+  { name: 'knowledge push', args: '<platform>', desc: '推送本地知识包到云端（乐观锁）' },
+  { name: 'knowledge status', args: '', desc: '本地/云端知识包版本对照' },
+  { name: 'engage feedback', args: '<engagement_id>', desc: '互动效果反馈采集（回路③）' },
+  { name: 'daemon', args: '', desc: '常驻守护：到点自动执行到期任务' },
+  { name: 'web', args: '', desc: '启动大屏 :8787' },
+  { name: 'serve', args: '', desc: 'daemon + web 一起跑' },
+  { name: 'version', args: '', desc: '版本号' },
+  { name: 'tools', args: '', desc: '本目录（机器可读，agent 自发现入口）' },
+];
+function toolCatalog(cfg) {
+  const base = (cfg.cloud && cfg.cloud.base_url || '').replace(/\/$/, '');
+  return {
+    ok: true,
+    service: 'maitian-hub-cli',
+    version: '0.1.0',
+    protocol: '所有命令输出 JSON；成功 ok:true，失败 ok:false + error。agent 按目录参数拼命令即可，输出都可直接解析。',
+    commands: CATALOG,
+    discovery: {
+      cloud_http_api: base ? 'GET ' + base + '/v1/endpoints（Bearer API key）——云端素材/密钥/知识包 HTTP 接口目录' : 'GET <cloud>/v1/endpoints（Bearer API key）——先在 config.json 配置 cloud.base_url',
+      skill_doc: 'content-hub/SKILL.md —— 完整流程编排与红线',
+    },
+  };
+}
 function usage() {
   print({
     ok: false,
-    usage: [
-      'node src/hub.mjs accounts list | add <platform> <name> [--mature（已有老号，跳过14天冷启动）] [--auto-publish（自动发布，红线1 v2）] | set <id> --auto-publish on|off | login <account_id> | remove <id>',
-      'node src/hub.mjs plan <material_id> --platforms xhs,douyin --accounts <id,id> [--at "2026-11-24 10:00"] --payload-file <payload.json>',
-      'node src/hub.mjs run [--due]',
-      'node src/hub.mjs confirm <post_id>',
-      'node src/hub.mjs interact <account_id> --plan <plan.json>',
-      'node src/hub.mjs approve <engagement_id | batch:today>   |   reject <engagement_id>',
-      'node src/hub.mjs health | review <post_id> [days] | doctor',
-      // 自进化（EVOLUTION-SPEC）：proposals 是唯一进化入口；策略库/知识包只经人审 approve 后由 hub 落地
-      'node src/hub.mjs strategy show <platform> | history <platform>',
-      'node src/hub.mjs proposal add --kind strategy|knowledge|quota|engage --platform <p> [--account <id>] --payload-file <f> [--basis dom_snapshot|screenshot] | list [status] | approve <id> | reject <id>',
-      'node src/hub.mjs knowledge sync [--platform <p>] | push <platform> | status',
-      'node src/hub.mjs engage feedback <engagement_id>   # 回路③反馈采集（本期占位）',
-      'node src/hub.mjs join <你的API密钥>            # 从门户「密钥管理」复制默认密钥，一次性写入本机凭证',
-      'node src/hub.mjs whoami                        # 用已存 API key 查询当前用户/租户/密钥/素材统计',
-      'node src/hub.mjs materials [--platform xhs] [--limit 20]   # 列出云端素材（可按平台过滤）',
-      'node src/hub.mjs daemon | web | serve',
-    ],
+    error: '未知命令或参数不足',
+    usage: CATALOG.map((c) => 'node src/hub.mjs ' + c.name + (c.args ? ' ' + c.args : '') + '    # ' + c.desc),
+    hint: 'node src/hub.mjs tools   # 机器可读命令目录（agent 自发现入口）',
   });
   process.exitCode = 1;
 }
@@ -229,6 +264,9 @@ async function main() {
       return;
     case 'version':
       return print({ ok: true, version: '0.1.0', now: nowIso(), daemon_heartbeat: kvGet(db, 'daemon_heartbeat') });
+    case 'help':
+    case 'tools':
+      return print(toolCatalog(cfg));
     default:
       return usage();
   }

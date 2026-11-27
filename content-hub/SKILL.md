@@ -9,6 +9,8 @@ description: 多平台账号矩阵运营——素材发布/互动养号/私聊/�
 
 **开始任何流程前**：先跑 `content-hub/scripts/doctor`（Python 零依赖）。它输出 JSON：`commands.*`（各可执行文件全路径）、`ego`、`hub`、`cloud`、`ready`、`actions[]`。之后一律用 `commands.*` 里的全路径调用，**不要写死路径**（Windows/macOS 差异全部由 doctor 消化）。
 
+**命令自发现**：不确定 hub 有哪些命令时，跑 `node src/hub.mjs tools` —— 输出机器可读的全量命令目录（每条含参数与说明）；云端 HTTP 接口目录见 `GET <cloud>/v1/endpoints`。本文件的流程段落优先级高于目录（目录只描述"有什么命令"，不描述"何时该用"）。
+
 ---
 
 ## 门禁清单（每阶段两栏对照；禁止跳步、禁止假装完成）
